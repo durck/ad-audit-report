@@ -43,6 +43,49 @@ def test_sanitize_truncates_long_text():
     assert "обрезано" in out  # truncation marker present
 
 
+def test_no_hardcoded_style_indices_in_rendered_cells(tmp_path):
+    """Excel rejects the workbook with «Ошибка в части содержимого» when cells
+    reference a cellXfs index that doesn't exist in styles.xml. openpyxl
+    surfaces the same defect as IndexError on load. The renderer must read
+    style ids from the template at runtime, not hardcode them.
+
+    Regression: TEMPLATE_DATA_STYLE = "6" / TEMPLATE_DATE_STYLE = "8" used to
+    be baked into the renderer for the legacy НМТП corporate template; the
+    bundled clean template has only 5 cellXfs entries, so any s="6" reference
+    overflowed.
+    """
+    from datetime import datetime
+
+    findings = [
+        Finding(
+            title="X", type="Недостаток", segment="Серверный",
+            details_text="", recommendation="r", note="n",
+            audit_date=datetime(2026, 5, 15), client="ТЕСТ", source_id="X",
+        )
+    ]
+    out = tmp_path / "report.xlsx"
+    render_report(TEMPLATE, out, findings)
+
+    # openpyxl in strict mode triggers IndexError on out-of-range style ids —
+    # that's the same defect Excel reports as a corrupted workbook.
+    import openpyxl
+    wb = openpyxl.load_workbook(out)
+    assert "Результаты" in wb.sheetnames
+
+    # Verify the appended row carries some s-attribute that exists in styles.xml,
+    # or no s-attribute at all (default style). Both are valid; an out-of-range
+    # numeric s is the bug we're guarding against.
+    with zipfile.ZipFile(out) as z:
+        styles_xml = z.read("xl/styles.xml").decode("utf-8")
+        sheet1 = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
+    cell_xfs_count_m = re.search(r'<cellXfs[^>]*count="(\d+)"', styles_xml)
+    max_s = int(cell_xfs_count_m.group(1)) - 1 if cell_xfs_count_m else 0
+    for s_val in re.findall(r'<c[^>]+s="(\d+)"', sheet1):
+        assert int(s_val) <= max_s, (
+            f"Cell references s='{s_val}' but cellXfs has indices 0..{max_s}"
+        )
+
+
 def test_render_handles_huge_cell_without_corruption(tmp_path):
     """End-to-end: a finding with >32767-char appendix cell must produce a
     valid xlsx, no cell with t/text longer than 32767, no XML 1.0 control chars."""

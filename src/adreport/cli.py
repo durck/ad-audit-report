@@ -279,15 +279,28 @@ def sanitize_template_cmd(
 @app.command()
 def doctor(
     xlsx: Path = typer.Argument(..., help="Path to a built report xlsx to validate."),
+    through_openpyxl: bool = typer.Option(
+        False, "--through-openpyxl",
+        help="Also load + re-save through openpyxl to surface strict-mode warnings.",
+    ),
 ):
     """Sanity-check a generated xlsx for problems Excel will reject on open.
 
-    Checks every internal XML part for:
-      - well-formedness (parseable XML)
+    Layer 1 (always):
+      - well-formedness of every internal XML part
       - cell text length ≤ 32767 chars (Excel hard limit)
       - no XML 1.0 forbidden control characters in cell content
       - workbook ↔ rels ↔ ContentTypes consistency (sheetId / rId / Override)
       - no duplicate sheet names / sheetIds / rIds
+      - per-sheet: rows in ascending `r` order, cells in ascending column order
+      - per-sheet: no duplicate `r` attributes on rows or cells
+      - per-sheet: hyperlinks point at existing locations (Sheet!Cell format)
+      - per-sheet: <dimension ref="..."> sane
+
+    Layer 2 (opt-in `--through-openpyxl`):
+      - load the file via openpyxl in strict mode and surface any warnings
+        (this catches things our text-level scanners miss — drawing rels,
+        named-range references, table ranges past sheet bounds, etc.)
 
     Use this when Excel shows «Ошибка в части содержимого» on open and the
     standard render path produces a file that openpyxl loads but Excel rejects.
@@ -322,10 +335,30 @@ def doctor(
             except _etree.XMLSyntaxError as e:
                 issues.append(f"XML parse error in {n}: {e}")
 
+        # Load core parts up front — per-sheet checks need to know the list
+        # of valid sheet names (for hyperlinks → location target checks).
+        try:
+            wb = _etree.fromstring(z.read("xl/workbook.xml"))
+            rels = _etree.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+            ct = _etree.fromstring(z.read("[Content_Types].xml"))
+        except KeyError as e:
+            issues.append(f"Missing core part: {e}")
+            wb = rels = ct = None
+
+        cell_ref_re = _re.compile(r"^([A-Z]+)(\d+)$")
+
+        def _col_index(letters: str) -> int:
+            idx = 0
+            for ch in letters:
+                idx = idx * 26 + (ord(ch) - ord("A") + 1)
+            return idx
+
         for n in names:
             if "worksheets/sheet" not in n or not n.endswith(".xml"):
                 continue
             root = _etree.fromstring(z.read(n))
+
+            # Cell content checks
             for t in root.iter(NS_M + "t"):
                 if t.text is None:
                     continue
@@ -334,13 +367,78 @@ def doctor(
                 if INVALID_RE.search(t.text):
                     bad_chars.append(n)
 
-        try:
-            wb = _etree.fromstring(z.read("xl/workbook.xml"))
-            rels = _etree.fromstring(z.read("xl/_rels/workbook.xml.rels"))
-            ct = _etree.fromstring(z.read("[Content_Types].xml"))
-        except KeyError as e:
-            issues.append(f"Missing core part: {e}")
-            wb = rels = ct = None
+            # Per-sheet structural checks
+            sd = root.find(NS_M + "sheetData")
+            if sd is None:
+                continue
+
+            row_numbers_seen: list[int] = []
+            for row in sd.findall(NS_M + "row"):
+                r_attr = row.get("r")
+                if r_attr is None:
+                    issues.append(f"{n}: <row> without r attribute")
+                    continue
+                rn = int(r_attr)
+                if row_numbers_seen and rn <= row_numbers_seen[-1]:
+                    issues.append(
+                        f"{n}: row r='{rn}' not in ascending order "
+                        f"(previous was r='{row_numbers_seen[-1]}')"
+                    )
+                row_numbers_seen.append(rn)
+
+                cell_cols_seen: list[int] = []
+                cell_refs_seen: set[str] = set()
+                for c in row.findall(NS_M + "c"):
+                    cref = c.get("r", "")
+                    m = cell_ref_re.match(cref)
+                    if not m:
+                        issues.append(f"{n}: cell with invalid r='{cref}' in row {rn}")
+                        continue
+                    if cref in cell_refs_seen:
+                        issues.append(f"{n}: duplicate cell ref {cref}")
+                    cell_refs_seen.add(cref)
+                    col_letters, row_in_ref = m.group(1), int(m.group(2))
+                    if row_in_ref != rn:
+                        issues.append(
+                            f"{n}: cell {cref} placed inside <row r='{rn}'> "
+                            f"(row component mismatches container)"
+                        )
+                    col_idx = _col_index(col_letters)
+                    if cell_cols_seen and col_idx <= cell_cols_seen[-1]:
+                        issues.append(
+                            f"{n}: cell {cref} not in ascending column order in row {rn}"
+                        )
+                    cell_cols_seen.append(col_idx)
+
+            # hyperlinks → location consistency
+            hl_el = root.find(NS_M + "hyperlinks")
+            if hl_el is not None:
+                sheet_names_set = {s.get("name") for s in wb.findall(f".//{NS_M}sheet")} if wb is not None else set()
+                for hl in hl_el.findall(NS_M + "hyperlink"):
+                    ref = hl.get("ref", "")
+                    loc = hl.get("location") or ""
+                    if not cell_ref_re.match(ref):
+                        issues.append(f"{n}: hyperlink ref '{ref}' is not a cell ref")
+                    if loc and "!" in loc:
+                        target_sheet = loc.split("!", 1)[0].strip("'")
+                        if sheet_names_set and target_sheet not in sheet_names_set:
+                            issues.append(
+                                f"{n}: hyperlink {ref}→'{loc}' points at non-existent sheet "
+                                f"'{target_sheet}'"
+                            )
+
+            # dimension sanity
+            dim_el = root.find(NS_M + "dimension")
+            if dim_el is not None and row_numbers_seen:
+                dim_ref = dim_el.get("ref", "")
+                if ":" in dim_ref:
+                    last = dim_ref.split(":", 1)[1]
+                    m = cell_ref_re.match(last)
+                    if m and int(m.group(2)) < max(row_numbers_seen):
+                        issues.append(
+                            f"{n}: dimension ref='{dim_ref}' ends before last row "
+                            f"r='{max(row_numbers_seen)}'"
+                        )
 
         if wb is not None:
             sheets = wb.findall(f".//{NS_M}sheet")
@@ -366,6 +464,26 @@ def doctor(
                 if f"/{sheet_part}" not in ct_parts:
                     issues.append(f"sheet part /{sheet_part} has no ContentTypes Override")
 
+    openpyxl_warnings: list[str] = []
+    if through_openpyxl:
+        import warnings as _w
+        try:
+            import openpyxl as _opx
+            with _w.catch_warnings(record=True) as caught:
+                _w.simplefilter("always")
+                _opx.load_workbook(xlsx)
+                for w in caught:
+                    msg = f"{w.category.__name__}: {w.message}"
+                    openpyxl_warnings.append(msg)
+        except ImportError:
+            typer.secho(
+                "  ℹ openpyxl not installed — install with `pip install openpyxl` "
+                "to enable --through-openpyxl",
+                fg=typer.colors.YELLOW,
+            )
+        except Exception as e:
+            openpyxl_warnings.append(f"load failed: {type(e).__name__}: {e}")
+
     typer.secho(f"\n=== Doctor report: {xlsx.name} ===", fg=typer.colors.CYAN, bold=True)
     typer.echo(f"  Sheets total      : {len(sheets) if wb is not None else '?'}")
     typer.echo(f"  XML parse errors  : {sum(1 for i in issues if 'parse error' in i)}")
@@ -376,12 +494,17 @@ def doctor(
     for n in bad_chars[:10]:
         typer.secho(f"      {n}", fg=typer.colors.RED)
     typer.echo(f"  Consistency issues: {len([i for i in issues if 'parse error' not in i])}")
-    for i in issues[:20]:
+    for i in issues[:30]:
         if "parse error" in i:
             continue
         typer.secho(f"      • {i[:300]}", fg=typer.colors.YELLOW)
 
-    if not over_limit and not bad_chars and not issues:
+    if through_openpyxl:
+        typer.echo(f"  openpyxl warnings : {len(openpyxl_warnings)}")
+        for w in openpyxl_warnings[:20]:
+            typer.secho(f"      • {w[:300]}", fg=typer.colors.YELLOW)
+
+    if not over_limit and not bad_chars and not issues and not openpyxl_warnings:
         typer.secho("\n✓ No defects detected.", fg=typer.colors.GREEN, bold=True)
     else:
         typer.secho(

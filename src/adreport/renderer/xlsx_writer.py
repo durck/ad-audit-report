@@ -27,10 +27,13 @@ NS_CT = "http://schemas.openxmlformats.org/package/2006/content-types"
 
 NSMAP_SHEET = {"r": NS_REL}
 
-# Style ids that exist in the template's styles.xml — taken from a sample
-# data row (row 6) so appended rows inherit borders, wrap-text, and alignment.
-TEMPLATE_DATA_STYLE = "6"
-TEMPLATE_DATE_STYLE = "8"  # date number_format
+# Style ids depend on the template's `xl/styles.xml`. We discover them at
+# runtime by reading attributes from cells that already exist in the template's
+# data rows (rows 6+). Hard-coding "6"/"8" was a leftover from the original
+# corporate template and crashed Excel when the bundled minimal template
+# happened to have fewer cellXfs entries.
+FALLBACK_DATA_STYLE: str | None = None  # no `s` attribute → default style
+FALLBACK_DATE_STYLE: str | None = None
 
 
 @dataclass
@@ -365,6 +368,50 @@ def _next_finding_number(sheet_xml: etree._Element, start_row: int) -> int:
     return max_num + 1
 
 
+def _template_style_for_column(
+    sheet_data: etree._Element,
+    column: str,
+    fallback: etree._Element | None = None,
+) -> str | None:
+    """Return the ``s`` attribute of any existing template-pre-populated cell in
+    `column`, used to inherit the template's per-column styling for new rows.
+
+    Strategy:
+      1. If `fallback` (existing same-row element) has a cell in this column
+         with `s`, return it — preserves customisations the user made.
+      2. Otherwise scan sheetData top-down for the first cell in this column
+         that carries `s` — that's the template's default styling.
+      3. Otherwise return None — Excel will use the workbook default style.
+
+    Crucially, indices are *not* hardcoded: they're read from styles.xml-indexed
+    cellXfs entries that physically exist in the template's styles.xml. This
+    keeps the renderer compatible with templates of any complexity.
+    """
+    # Helper: column-letter prefix from a cell ref like "A6" → "A"
+    import re as _re
+    _col_re = _re.compile(r"^([A-Z]+)\d+$")
+
+    def _cell_col(c: etree._Element) -> str | None:
+        m = _col_re.match(c.get("r", ""))
+        return m.group(1) if m else None
+
+    if fallback is not None:
+        for c in fallback.findall(_q("c")):
+            if _cell_col(c) == column:
+                s = c.get("s")
+                if s:
+                    return s
+                break
+    for row in sheet_data.findall(_q("row")):
+        for c in row.findall(_q("c")):
+            if _cell_col(c) == column:
+                s = c.get("s")
+                if s:
+                    return s
+                break
+    return None
+
+
 def _set_row(
     sheet_xml: etree._Element,
     row_num: int,
@@ -408,16 +455,23 @@ def _set_row(
     client_cell = (
         f"{finding.client} ({finding.domain})" if finding.domain else finding.client
     )
+
+    # Look up styles from any existing template row in the same column.
+    # This avoids hard-coded indices that would point past the template's
+    # cellXfs list (causing Excel to mark the workbook as corrupted).
+    def _s_for(col: str, prefer_date: bool = False) -> str | None:
+        return _template_style_for_column(sheet_data, col, fallback=existing)
+
     cells = [
-        _cell_number(row_num, "A", number, style=TEMPLATE_DATA_STYLE),
-        _cell_number(row_num, "B", date_serial, style=TEMPLATE_DATE_STYLE),
-        _cell_inline(row_num, "C", client_cell, style=TEMPLATE_DATA_STYLE),
-        _cell_inline(row_num, "D", finding.segment, style=TEMPLATE_DATA_STYLE),
-        _cell_inline(row_num, "E", finding.type, style=TEMPLATE_DATA_STYLE),
-        _cell_inline(row_num, "F", finding.title, style=TEMPLATE_DATA_STYLE),
-        _cell_inline(row_num, "G", details_text, style=TEMPLATE_DATA_STYLE),
-        _cell_inline(row_num, "H", finding.recommendation, style=TEMPLATE_DATA_STYLE),
-        _cell_inline(row_num, "I", finding.note, style=TEMPLATE_DATA_STYLE),
+        _cell_number(row_num, "A", number, style=_s_for("A")),
+        _cell_number(row_num, "B", date_serial, style=_s_for("B", prefer_date=True)),
+        _cell_inline(row_num, "C", client_cell, style=_s_for("C")),
+        _cell_inline(row_num, "D", finding.segment, style=_s_for("D")),
+        _cell_inline(row_num, "E", finding.type, style=_s_for("E")),
+        _cell_inline(row_num, "F", finding.title, style=_s_for("F")),
+        _cell_inline(row_num, "G", details_text, style=_s_for("G")),
+        _cell_inline(row_num, "H", finding.recommendation, style=_s_for("H")),
+        _cell_inline(row_num, "I", finding.note, style=_s_for("I")),
     ]
     for c in cells:
         new_row.append(c)
