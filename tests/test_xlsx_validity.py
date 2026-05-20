@@ -30,22 +30,20 @@ def test_sanitize_strips_xml_invalid_controls():
     assert _sanitize_cell_text(raw) == "abcdefghi"
 
 
-def test_sanitize_collapses_consecutive_newlines():
-    """Catalog entries used `\\n\\n` between paragraphs for readability.
-    In a `<t xml:space="preserve">` cell this serialises to a literal blank
-    line between paragraphs, which Excel's strict validator has been
-    observed to reject. Collapse 2+ LFs to a single LF.
+def test_sanitize_flattens_all_line_breaks_to_bullet():
+    """Excel's strict validator repeatedly rejected cells with literal
+    newlines in xml:space="preserve" text — first as `\\n\\n`, then `\\n`,
+    then again after every fix sheet1.xml flagged a new line. The only
+    reliable mitigation is to flatten in-cell line breaks entirely.
+
+    All runs of CR / LF / CRLF collapse to a visual bullet separator,
+    which Excel renders inline without any of the strict-mode side effects.
     """
-    raw = "first paragraph\n\nsecond paragraph\n\n\nthird paragraph"
+    raw = "first paragraph\n\nsecond paragraph\rmixed\r\nlast"
     out = _sanitize_cell_text(raw)
-    assert out == "first paragraph\nsecond paragraph\nthird paragraph"
-
-
-def test_sanitize_normalises_line_endings():
-    raw = "windows\r\nmac\rmixed\nend"
-    out = _sanitize_cell_text(raw)
+    assert "\n" not in out
     assert "\r" not in out
-    assert out == "windows\nmac\nmixed\nend"
+    assert out == "first paragraph  •  second paragraph  •  mixed  •  last"
 
 
 def test_sanitize_collapses_replacement_chars():
@@ -63,13 +61,12 @@ def test_sanitize_collapses_replacement_chars():
     assert out == "user@CORP.LOCAL — ? ? ? test"
 
 
-def test_sanitize_keeps_tab_and_lf():
-    """\\t and \\n are XML 1.0 legal and preserved as-is.
+def test_sanitize_keeps_tab():
+    """\\t survives — only line breaks are flattened.
 
-    Note: \\r is normalised to \\n by the sanitiser to avoid mixed line
-    endings — see test_sanitize_normalises_line_endings.
+    Linebreak flattening is covered in test_sanitize_flattens_all_line_breaks_to_bullet.
     """
-    raw = "line1\nline2\tindented\nend"
+    raw = "col1\tcol2\tcol3"
     assert _sanitize_cell_text(raw) == raw
 
 
