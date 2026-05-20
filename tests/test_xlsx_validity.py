@@ -77,6 +77,57 @@ def test_sanitize_truncates_long_text():
     assert "обрезано" in out  # truncation marker present
 
 
+def test_worksheet_children_in_schema_order(tmp_path):
+    """OOXML CT_Worksheet mandates a strict child-element order. Inserting
+    a new <hyperlinks> or <dimension> in the wrong slot makes Excel reject
+    the workbook with «Ошибка в части содержимого», even though lxml /
+    openpyxl / our text-level doctor all accept it.
+
+    Regression: _add_hyperlinks used to splice <hyperlinks> right after
+    <sheetData>/<mergeCells>, which placed it BEFORE the bundled template's
+    <dataValidations> (schema requires dataValidations to precede hyperlinks).
+    """
+    from datetime import datetime
+
+    from adreport.model import Appendix, Finding
+    from adreport.renderer import render_report
+
+    findings = [
+        Finding(
+            title="x", type="Уязвимость", segment="Серверный",
+            details_text="", recommendation="r", note="n",
+            audit_date=datetime(2026, 5, 15), client="TEST",
+            source_id="X",
+            appendix=Appendix(title="t", columns=("A",), rows=(("v1",), ("v2",))),
+        )
+    ]
+    out = tmp_path / "report.xlsx"
+    render_report(TEMPLATE, out, findings)
+
+    # Canonical order (subset relevant to our renderer)
+    canonical = [
+        "sheetPr", "dimension", "sheetViews", "sheetFormatPr", "cols", "sheetData",
+        "mergeCells", "dataValidations", "hyperlinks",
+        "pageMargins", "tableParts", "extLst",
+    ]
+    canon_index = {tag: i for i, tag in enumerate(canonical)}
+
+    with zipfile.ZipFile(out) as z:
+        sheet1 = z.read("xl/worksheets/sheet1.xml")
+    root = etree.fromstring(sheet1)
+    seen_positions: list[tuple[str, int]] = []
+    for child in root:
+        tag = etree.QName(child).localname
+        if tag in canon_index:
+            seen_positions.append((tag, canon_index[tag]))
+
+    positions_only = [p for _, p in seen_positions]
+    assert positions_only == sorted(positions_only), (
+        f"worksheet children out of schema order: "
+        f"{[t for t, _ in seen_positions]} — Excel will reject this file"
+    )
+
+
 def test_no_hardcoded_style_indices_in_rendered_cells(tmp_path):
     """Excel rejects the workbook with «Ошибка в части содержимого» when cells
     reference a cellXfs index that doesn't exist in styles.xml. openpyxl

@@ -414,10 +414,10 @@ def _refresh_dimension(sheet_xml: etree._Element) -> None:
     new_ref = f"A1:{max_col_letters}{max_row}"
     dim = sheet_xml.find(_q("dimension"))
     if dim is None:
-        # Insert <dimension> right after <worksheet> opening (before sheetViews)
+        # Schema-correct slot is after sheetPr, before sheetViews.
         dim = etree.Element(_q("dimension"))
         dim.set("ref", new_ref)
-        sheet_xml.insert(0, dim)
+        _insert_child_in_order(sheet_xml, dim)
     else:
         dim.set("ref", new_ref)
 
@@ -629,21 +629,83 @@ def _excel_date_serial(d: dt.datetime | dt.date) -> int:
 # =============================================================================== hyperlinks
 
 
+# OOXML CT_Worksheet schema mandates a strict order for child elements.
+# Inserting in the wrong slot makes Excel's strict on-open validator reject
+# the workbook with «Ошибка в части содержимого» — even though lxml / openpyxl
+# / our doctor all accept it. This is the canonical order from ECMA-376.
+_WORKSHEET_CHILD_ORDER = (
+    "sheetPr",
+    "dimension",
+    "sheetViews",
+    "sheetFormatPr",
+    "cols",
+    "sheetData",
+    "sheetCalcPr",
+    "sheetProtection",
+    "protectedRanges",
+    "scenarios",
+    "autoFilter",
+    "sortState",
+    "dataConsolidate",
+    "customSheetViews",
+    "mergeCells",
+    "phoneticPr",
+    "conditionalFormatting",
+    "dataValidations",
+    "hyperlinks",
+    "printOptions",
+    "pageMargins",
+    "pageSetup",
+    "headerFooter",
+    "rowBreaks",
+    "colBreaks",
+    "customProperties",
+    "cellWatches",
+    "ignoredErrors",
+    "smartTags",
+    "drawing",
+    "legacyDrawing",
+    "legacyDrawingHF",
+    "picture",
+    "oleObjects",
+    "controls",
+    "webPublishItems",
+    "tableParts",
+    "extLst",
+)
+
+
+def _insert_child_in_order(parent: etree._Element, new_child: etree._Element) -> None:
+    """Insert ``new_child`` into ``parent`` at the position dictated by the
+    OOXML CT_Worksheet schema. Strict ordering is required by Excel.
+    """
+    new_tag = etree.QName(new_child).localname
+    try:
+        new_pos = _WORKSHEET_CHILD_ORDER.index(new_tag)
+    except ValueError:
+        parent.append(new_child)
+        return
+
+    insert_at = len(parent)  # default: append
+    for i, existing in enumerate(parent):
+        existing_tag = etree.QName(existing).localname
+        try:
+            existing_pos = _WORKSHEET_CHILD_ORDER.index(existing_tag)
+        except ValueError:
+            continue
+        if existing_pos > new_pos:
+            insert_at = i
+            break
+    parent.insert(insert_at, new_child)
+
+
 def _add_hyperlinks(sheet_xml: etree._Element, links: list[tuple[str, str]]) -> None:
     if not links:
         return
     hyperlinks_el = sheet_xml.find(_q("hyperlinks"))
     if hyperlinks_el is None:
         hyperlinks_el = etree.Element(_q("hyperlinks"))
-        # Insert after sheetData / mergeCells, before pageMargins
-        sheet_data_idx = list(sheet_xml).index(sheet_xml.find(_q("sheetData")))
-        # Insert at index after sheetData (or after mergeCells if present)
-        merge = sheet_xml.find(_q("mergeCells"))
-        if merge is not None:
-            insert_at = list(sheet_xml).index(merge) + 1
-        else:
-            insert_at = sheet_data_idx + 1
-        sheet_xml.insert(insert_at, hyperlinks_el)
+        _insert_child_in_order(sheet_xml, hyperlinks_el)
     for cell_ref, location in links:
         link = etree.SubElement(hyperlinks_el, _q("hyperlink"))
         link.set("ref", cell_ref)
