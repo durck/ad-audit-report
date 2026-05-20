@@ -113,6 +113,21 @@ class ProjectConfig(BaseModel):
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     overrides: dict[str, OverrideEntry] = Field(default_factory=dict)
 
+    @field_validator("overrides", mode="before")
+    @classmethod
+    def _overrides_none_to_empty(cls, v):
+        # YAML `overrides:` with no body parses as None. Pydantic's
+        # default_factory fires only when the key is absent, not when it's
+        # explicit-None — coerce to {} so users can leave the section empty
+        # in the init-config template without crashing validate/build.
+        return {} if v is None else v
+
+    @field_validator("defaults", mode="before")
+    @classmethod
+    def _defaults_none_to_factory(cls, v):
+        # Same shape for `defaults:` with no body — fall back to defaults.
+        return DefaultsConfig() if v is None else v
+
     @field_validator("template", "output")
     @classmethod
     def _expand(cls, v: Path | None) -> Path | None:
