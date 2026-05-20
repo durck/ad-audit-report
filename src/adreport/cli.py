@@ -277,6 +277,46 @@ def sanitize_template_cmd(
 
 
 @app.command()
+def repair(
+    xlsx: Path = typer.Argument(..., help="Path to the suspect xlsx."),
+    out: Path = typer.Argument(..., help="Where to write the openpyxl-roundtripped copy."),
+):
+    """Round-trip a built report through openpyxl's serialiser.
+
+    openpyxl emits Microsoft-shaped XML (different attribute ordering, namespace
+    placement, element flatness vs lxml's pretty output). If Excel rejects the
+    original but accepts the round-tripped copy, the root cause is lxml-vs-Excel
+    serialiser quirks, not our data.
+
+    This is a diagnostic — the round-trip may strip our custom appendices,
+    hyperlinks, or x14 data validations. Don't ship the output as the report;
+    use it only to identify whether the lxml output is the problem.
+    """
+    try:
+        import openpyxl as _opx
+    except ImportError:
+        typer.secho("openpyxl is not installed — `pip install openpyxl`", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    if not xlsx.exists():
+        typer.secho(f"File not found: {xlsx}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Loading {xlsx}...")
+    wb = _opx.load_workbook(xlsx)
+    typer.echo(f"Loaded {len(wb.sheetnames)} sheets: {wb.sheetnames[:5]}{'...' if len(wb.sheetnames) > 5 else ''}")
+    typer.echo(f"Saving roundtripped copy to {out}...")
+    wb.save(out)
+    typer.secho(
+        f"✓ Wrote {out} ({out.stat().st_size} bytes)\n"
+        f"  Try opening this file in Excel. If it opens cleanly while the original"
+        f"  does not, the lxml serialiser is at fault (custom appendices may be"
+        f"  lost in the round-trip — this is a diagnostic, not a final report).",
+        fg=typer.colors.GREEN,
+    )
+
+
+@app.command()
 def doctor(
     xlsx: Path = typer.Argument(..., help="Path to a built report xlsx to validate."),
     through_openpyxl: bool = typer.Option(
