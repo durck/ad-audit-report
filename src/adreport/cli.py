@@ -80,8 +80,8 @@ def init_config(path: Path = typer.Argument(Path("project.yaml"), help="Where to
 def _run_pipeline_for_domains(cfg, catalog) -> tuple[list, list[str]]:
     """Run pipeline across every domain in cfg; return (findings, unknown_risk_ids).
 
-    Handles both `inputs:` (single domain) and `domains:` (multi). Findings are
-    flat-merged; each carries its `.domain` tag.
+    Prints a per-domain summary table with a legend so the meaning of each
+    column is self-evident.
 
     Sources are independent: a domain may have only PingCastle, only PlumHound,
     or both. Missing PingCastle → PlumHound-only synthetic findings still fire.
@@ -91,6 +91,8 @@ def _run_pipeline_for_domains(cfg, catalog) -> tuple[list, list[str]]:
 
     all_findings: list = []
     all_unknown: list[str] = []
+    rows: list[dict] = []  # per-domain summary for the table
+
     for d in cfg.iter_domain_inputs():
         pc_path = d.pingcastle if d.pingcastle and d.pingcastle.exists() else None
         plum_path = d.plumhound if d.plumhound and d.plumhound.exists() else None
@@ -101,9 +103,6 @@ def _run_pipeline_for_domains(cfg, catalog) -> tuple[list, list[str]]:
             )
             continue
 
-        # Warn about each source that was configured but unreachable, so the
-        # user doesn't silently lose half their findings to a typo or a
-        # missing mount.
         if d.pingcastle and pc_path is None:
             typer.secho(
                 f"  ℹ [{d.name}] PingCastle XML configured but not found at "
@@ -120,8 +119,6 @@ def _run_pipeline_for_domains(cfg, catalog) -> tuple[list, list[str]]:
         if pc_path is not None:
             pc = parse_pingcastle(pc_path)
         else:
-            # Synthesise an empty report so PlumHound-only synthetic findings
-            # can still trigger. No PingCastle rules will be iterated.
             pc = PingCastleReport(
                 domain=d.name, generation_date="", global_score=0,
                 stale_objects_score=0, privileged_group_score=0,
@@ -137,16 +134,70 @@ def _run_pipeline_for_domains(cfg, catalog) -> tuple[list, list[str]]:
         finally:
             if plum is not None:
                 plum.cleanup()
+
         all_findings.extend(result.findings)
         all_unknown.extend(result.unknown_risk_ids)
-        label = d.name or pc.domain or "<single>"
-        html_info = f", html_details={len(pc_details)}" if pc_details else ""
-        pc_info = f"rules={len(pc.rules)} score={pc.global_score} " if pc_path else "rules=0 (no XML) "
-        typer.secho(
-            f"  [{label}] {pc_info}findings={len(result.findings)}{html_info}",
-            fg=typer.colors.CYAN,
-        )
+        rows.append({
+            "domain": d.name or pc.domain or "<single>",
+            "pc_rules": len(pc.rules) if pc_path else None,
+            "pc_score": pc.global_score if pc_path else None,
+            "html_det": len(pc_details) if pc_path else None,
+            "plum": plum is not None,
+            "findings": len(result.findings),
+        })
+
+    if rows:
+        _print_domain_summary_table(rows)
     return all_findings, sorted(set(all_unknown))
+
+
+def _print_domain_summary_table(rows: list[dict]) -> None:
+    """Render the per-domain breakdown as a legend + aligned table."""
+    typer.echo("")
+    typer.secho("Легенда:", fg=typer.colors.CYAN, bold=True)
+    typer.echo("  PC_rules    — правил PingCastle, найденных в .xml")
+    typer.echo("  PC_score    — GlobalScore PingCastle (0..100, выше = хуже)")
+    typer.echo("  HTML_det    — правил с детализацией в PingCastle HTML")
+    typer.echo("  Plum        — PlumHound подключён (✓/—)")
+    typer.echo("  Findings    — строк в финальном отчёте")
+    typer.echo("")
+
+    headers = ("Домен", "PC_rules", "PC_score", "HTML_det", "Plum", "Findings")
+    # Compute width per column from header + max value
+    def _fmt(v):
+        if v is None:
+            return "—"
+        if isinstance(v, bool):
+            return "✓" if v else "—"
+        return str(v)
+
+    table_rows = [
+        (r["domain"], _fmt(r["pc_rules"]), _fmt(r["pc_score"]),
+         _fmt(r["html_det"]), _fmt(r["plum"]), _fmt(r["findings"]))
+        for r in rows
+    ]
+    widths = [
+        max(len(headers[i]), *(len(row[i]) for row in table_rows))
+        for i in range(len(headers))
+    ]
+    # Left-align domain, right-align numbers
+    align = ("<", ">", ">", ">", "^", ">")
+
+    def _row(cells):
+        return "  " + "  ".join(
+            f"{cells[i]:{align[i]}{widths[i]}}" for i in range(len(cells))
+        )
+
+    sep = "  " + "─" * (sum(widths) + 2 * (len(widths) - 1))
+    typer.secho(_row(headers), fg=typer.colors.CYAN, bold=True)
+    typer.echo(sep)
+    for row in table_rows:
+        typer.echo(_row(row))
+    typer.echo(sep)
+    typer.secho(
+        f"Итого: {len(rows)} доменов, {sum(r['findings'] for r in rows)} строк в отчёте",
+        fg=typer.colors.GREEN, bold=True,
+    )
 
 
 @app.command()
