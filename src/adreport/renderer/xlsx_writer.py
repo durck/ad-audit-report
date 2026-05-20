@@ -427,6 +427,7 @@ def _template_style_for_column(
     column: str,
     fallback: etree._Element | None = None,
     header_row: int = 5,
+    prefer_row: int | None = None,
 ) -> str | None:
     """Return the ``s`` attribute of an existing template DATA cell in `column`.
 
@@ -457,6 +458,19 @@ def _template_style_for_column(
                 if s:
                     return s
                 break
+    # Look up a specific sample row first (e.g. hyperlink-style sample at row 7).
+    if prefer_row is not None:
+        for row in sheet_data.findall(_q("row")):
+            if row.get("r") != str(prefer_row):
+                continue
+            for c in row.findall(_q("c")):
+                col, _ = _cell_meta(c)
+                if col == column:
+                    s = c.get("s")
+                    if s:
+                        return s
+                    return None
+            break
     for row in sheet_data.findall(_q("row")):
         for c in row.findall(_q("c")):
             col, row_num = _cell_meta(c)
@@ -513,22 +527,25 @@ def _set_row(
         f"{finding.client} ({finding.domain})" if finding.domain else finding.client
     )
 
-    # Look up styles from any existing template row in the same column.
-    # This avoids hard-coded indices that would point past the template's
-    # cellXfs list (causing Excel to mark the workbook as corrupted).
-    def _s_for(col: str, prefer_date: bool = False) -> str | None:
-        return _template_style_for_column(sheet_data, col, fallback=existing)
+    # Look up styles from template's sample rows (6 = regular, 7 = hyperlink).
+    def _s_for(col: str, prefer_row: int | None = None) -> str | None:
+        return _template_style_for_column(
+            sheet_data, col, fallback=existing, prefer_row=prefer_row
+        )
 
+    # G column uses the hyperlink-style sample (row 7) when this finding has
+    # an appendix link, otherwise the regular data sample (row 6).
+    g_sample_row = 7 if finding.appendix is not None else 6
     cells = [
-        _cell_number(row_num, "A", number, style=_s_for("A")),
-        _cell_number(row_num, "B", date_serial, style=_s_for("B", prefer_date=True)),
-        _cell_inline(row_num, "C", client_cell, style=_s_for("C")),
-        _cell_inline(row_num, "D", finding.segment, style=_s_for("D")),
-        _cell_inline(row_num, "E", finding.type, style=_s_for("E")),
-        _cell_inline(row_num, "F", finding.title, style=_s_for("F")),
-        _cell_inline(row_num, "G", details_text, style=_s_for("G")),
-        _cell_inline(row_num, "H", finding.recommendation, style=_s_for("H")),
-        _cell_inline(row_num, "I", finding.note, style=_s_for("I")),
+        _cell_number(row_num, "A", number, style=_s_for("A", prefer_row=6)),
+        _cell_number(row_num, "B", date_serial, style=_s_for("B", prefer_row=6)),
+        _cell_inline(row_num, "C", client_cell, style=_s_for("C", prefer_row=6)),
+        _cell_inline(row_num, "D", finding.segment, style=_s_for("D", prefer_row=6)),
+        _cell_inline(row_num, "E", finding.type, style=_s_for("E", prefer_row=6)),
+        _cell_inline(row_num, "F", finding.title, style=_s_for("F", prefer_row=6)),
+        _cell_inline(row_num, "G", details_text, style=_s_for("G", prefer_row=g_sample_row)),
+        _cell_inline(row_num, "H", finding.recommendation, style=_s_for("H", prefer_row=6)),
+        _cell_inline(row_num, "I", finding.note, style=_s_for("I", prefer_row=6)),
     ]
     for c in cells:
         new_row.append(c)
@@ -719,19 +736,36 @@ def _add_hyperlinks(sheet_xml: etree._Element, links: list[tuple[str, str]]) -> 
 # =============================================================================== appendix sheet
 
 
+_APX_BACKLINK_TEXT = "← К результатам"
+
+
 def _build_appendix_sheet_xml(
     title: str, rows: list[tuple[str, ...]], columns: tuple[str, ...]
 ) -> bytes:
-    """Build a minimal valid worksheet xml for an appendix."""
+    """Build a minimal valid worksheet xml for an appendix.
+
+    Layout:
+      A1: ← К результатам   (hyperlink back to Результаты!A1)
+      A2: title (bold)
+      A3 / B3 / ...: column headers (when columns provided)
+      A4+: data rows
+    Without `columns`, data rows start at row 3 (no header row).
+    """
     root = etree.Element(_q("worksheet"), nsmap={None: NS_MAIN, "r": NS_REL})
     dim = etree.SubElement(root, _q("dimension"))
     last_col_letter = _column_letter(max(len(columns), 1))
-    last_row = max(len(rows) + 2, 1)
+    last_row = max(len(rows) + 3, 1)  # +1 for backlink row 1
     dim.set("ref", f"A1:{last_col_letter}{last_row}")
 
     sheet_views = etree.SubElement(root, _q("sheetViews"))
     sheet_view = etree.SubElement(sheet_views, _q("sheetView"))
     sheet_view.set("workbookViewId", "0")
+    # Freeze the back-link + title so they stay visible while the user
+    # scrolls through long appendix lists.
+    pane = etree.SubElement(sheet_view, _q("pane"))
+    pane.set("ySplit", "2")
+    pane.set("topLeftCell", "A3")
+    pane.set("state", "frozen")
 
     etree.SubElement(root, _q("sheetFormatPr")).set("defaultRowHeight", "15")
 
@@ -745,25 +779,38 @@ def _build_appendix_sheet_xml(
 
     sheet_data = etree.SubElement(root, _q("sheetData"))
 
-    # Row 1: title (bold via style 0; we don't have a header style guaranteed in template, leave plain)
-    title_row = etree.SubElement(sheet_data, _q("row"))
-    title_row.set("r", "1")
-    title_row.append(_cell_inline(1, "A", title))
+    # Row 1: back-link to Результаты
+    backlink_row = etree.SubElement(sheet_data, _q("row"))
+    backlink_row.set("r", "1")
+    backlink_row.append(_cell_inline(1, "A", _APX_BACKLINK_TEXT))
 
-    # Row 2: column headers
+    # Row 2: title
+    title_row = etree.SubElement(sheet_data, _q("row"))
+    title_row.set("r", "2")
+    title_row.append(_cell_inline(2, "A", title))
+
+    # Row 3: column headers
     if columns:
         hdr_row = etree.SubElement(sheet_data, _q("row"))
-        hdr_row.set("r", "2")
+        hdr_row.set("r", "3")
         for i, col_name in enumerate(columns):
-            hdr_row.append(_cell_inline(2, _column_letter(i + 1), col_name))
+            hdr_row.append(_cell_inline(3, _column_letter(i + 1), col_name))
 
-    # Rows 3..N: data
-    start_data_row = 3 if columns else 2
+    # Rows 4..N: data
+    start_data_row = 4 if columns else 3
     for ri, row in enumerate(rows):
         r_el = etree.SubElement(sheet_data, _q("row"))
         r_el.set("r", str(start_data_row + ri))
         for ci, cell_value in enumerate(row):
             r_el.append(_cell_inline(start_data_row + ri, _column_letter(ci + 1), cell_value))
+
+    # Hyperlink for the back-link cell A1.
+    hyperlinks_el = etree.Element(_q("hyperlinks"))
+    backlink = etree.SubElement(hyperlinks_el, _q("hyperlink"))
+    backlink.set("ref", "A1")
+    backlink.set("location", "Результаты!A1")
+    backlink.set("display", _APX_BACKLINK_TEXT)
+    _insert_child_in_order(root, hyperlinks_el)
 
     etree.SubElement(root, _q("pageMargins")).attrib.update(
         {"left": "0.7", "right": "0.7", "top": "0.75", "bottom": "0.75",

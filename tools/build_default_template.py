@@ -95,13 +95,33 @@ def _build_main_sheet(ws) -> None:
         c.alignment = header_align
         c.border = border
 
-    # Note: do NOT pre-populate rows 6..LAST_DATA_ROW with empty cells.
-    # openpyxl writes empty cells as `<c r="X6" t="n"/>` (number type, no <v>)
-    # which is malformed per OOXML spec — Excel rejects such files with
-    # «Ошибка в части содержимого». Per-cell styling is inherited by appended
-    # rows via the Excel Table's dataDxfId, which colours / borders every row
-    # within the table's ref range automatically. The renderer adds new rows
-    # with explicit cell content, so they pick up the table's data style.
+    # Pre-populate rows 6 and 7 as styled "sample" cells. The renderer reads
+    # per-column `s` (style id) from these samples via _template_style_for_column.
+    # Row 6 = regular data style.
+    # Row 7 = hyperlink data style (only column G — used when a cell points
+    #         at an appendix sheet).
+    #
+    # We use inlineStr placeholders ("") rather than openpyxl's default
+    # `<c t="n"/>` so the cells are well-formed (malformed empty number cells
+    # would make Excel reject the workbook).
+    data_align = Alignment(wrap_text=True, vertical="top")
+    for col in range(1, len(HEADERS) + 1):
+        c = ws.cell(row=6, column=col, value="")
+        c.alignment = data_align
+        c.border = border
+    ws.cell(row=6, column=2).number_format = "DD.MM.YYYY"
+
+    # Row 7 G: hyperlink style — blue underlined font, otherwise same as data
+    hyperlink_font = Font(color="0563C1", underline="single")
+    g7 = ws.cell(row=7, column=7, value="")
+    g7.alignment = data_align
+    g7.border = border
+    g7.font = hyperlink_font
+
+    # Row dimensions: row 6/7 stay default height, otherwise Excel auto-fits.
+    # Row 7 is a private sample only — hide it so the user never sees the
+    # empty cell.
+    ws.row_dimensions[7].hidden = True
 
     # Excel Table on the data range
     ref = f"A5:{get_column_letter(len(HEADERS))}{LAST_DATA_ROW}"
