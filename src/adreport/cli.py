@@ -101,6 +101,22 @@ def _run_pipeline_for_domains(cfg, catalog) -> tuple[list, list[str]]:
             )
             continue
 
+        # Warn about each source that was configured but unreachable, so the
+        # user doesn't silently lose half their findings to a typo or a
+        # missing mount.
+        if d.pingcastle and pc_path is None:
+            typer.secho(
+                f"  ℹ [{d.name}] PingCastle XML configured but not found at "
+                f"{d.pingcastle} — falling back to PlumHound-only synthetics",
+                fg=typer.colors.YELLOW,
+            )
+        if d.plumhound and plum_path is None:
+            typer.secho(
+                f"  ℹ [{d.name}] PlumHound output configured but not found at "
+                f"{d.plumhound} — appendix details will be limited to PingCastle HTML",
+                fg=typer.colors.YELLOW,
+            )
+
         if pc_path is not None:
             pc = parse_pingcastle(pc_path)
         else:
@@ -110,11 +126,6 @@ def _run_pipeline_for_domains(cfg, catalog) -> tuple[list, list[str]]:
                 domain=d.name, generation_date="", global_score=0,
                 stale_objects_score=0, privileged_group_score=0,
                 trust_score=0, anomaly_score=0, rules=(),
-            )
-            typer.secho(
-                f"  ℹ [{d.name}] PingCastle XML missing → PingCastle rules skipped, "
-                f"PlumHound-only synthetics will still run",
-                fg=typer.colors.YELLOW,
             )
 
         pc_details = load_pingcastle_details(d.pingcastle_html) if d.pingcastle_html and d.pingcastle_html.exists() else {}

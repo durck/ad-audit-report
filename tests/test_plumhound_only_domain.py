@@ -66,6 +66,68 @@ defaults:
     assert all(f.domain == "only-plum.example.com" for f in findings)
 
 
+def test_configured_pingcastle_missing_falls_back_to_plumhound(tmp_path, plum_zip, capsys):
+    """Both pingcastle and plumhound configured, pingcastle file missing →
+    PlumHound part still processed; user gets a clear warning."""
+    from adreport.cli import _run_pipeline_for_domains, _load_project
+    from adreport.catalog import Catalog
+
+    yaml_text = f"""\
+client:
+  name: 'ACME'
+  audit_date: 2026-05-15
+domains:
+  - name: half-missing.example.com
+    pingcastle: /nonexistent/pc.xml
+    plumhound: {plum_zip.as_posix()}
+output: ./out.xlsx
+defaults:
+  appendix_threshold: 2
+"""
+    p = tmp_path / "project.yaml"
+    p.write_text(yaml_text, encoding="utf-8")
+    cfg, _ = _load_project(p)
+    findings, _ = _run_pipeline_for_domains(cfg, Catalog.load_default())
+
+    # PlumHound synthetics still fire
+    assert any(f.source_id == "PH-KRBTGT-Stale" for f in findings)
+    # User sees an explicit warning naming the missing file
+    captured = capsys.readouterr()
+    assert "PingCastle XML configured but not found" in captured.out
+    assert "/nonexistent/pc.xml" in captured.out
+
+
+def test_configured_plumhound_missing_keeps_pingcastle(tmp_path, capsys):
+    """Symmetric case: PingCastle works, PlumHound configured but missing."""
+    from adreport.cli import _run_pipeline_for_domains, _load_project
+    from adreport.catalog import Catalog
+
+    pc_path = FIXTURES / "mini_pingcastle.xml"
+    yaml_text = f"""\
+client:
+  name: 'ACME'
+  audit_date: 2026-05-15
+domains:
+  - name: half-missing.example.com
+    pingcastle: {pc_path.as_posix()}
+    plumhound: /nonexistent/plum/
+output: ./out.xlsx
+defaults:
+  appendix_threshold: 2
+"""
+    p = tmp_path / "project.yaml"
+    p.write_text(yaml_text, encoding="utf-8")
+    cfg, _ = _load_project(p)
+    findings, _ = _run_pipeline_for_domains(cfg, Catalog.load_default())
+
+    # PingCastle rules still produce findings
+    pc_findings = [f for f in findings if f.source_id.startswith(("P-", "S-", "A-"))]
+    assert len(pc_findings) > 0
+    captured = capsys.readouterr()
+    assert "PlumHound output configured but not found" in captured.out
+    assert "/nonexistent/plum" in captured.out
+
+
 def test_run_pipeline_skips_domain_with_no_inputs(tmp_path, capsys):
     """When both sources are missing, the domain is skipped entirely with a warning."""
     from adreport.cli import _run_pipeline_for_domains, _load_project
