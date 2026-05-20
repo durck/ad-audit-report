@@ -1,0 +1,2067 @@
+# Catalog of PingCastle RiskIds → recommendations, and PlumHound-only findings.
+# Russian text targets the standard "недостаток конфигурации" report format.
+#
+# Adding a rule:
+#   <RiskId>:
+#     title: "<short description in column F>"
+#     type: Недостаток | Возможно недостаток | Уязвимость
+#     segment: Пользовательский | Серверный | ...
+#     recommendation: |
+#       Multi-line Russian remediation guidance.
+#     plumhound:                          # optional — for appendix details
+#       - file: AdminsWithout_ProtectedUsers
+#         cols: [User, DisplayName, Priv_Groups]
+#     ldap_hint: |                        # optional — printed in details when no plumhound data
+#       Get-ADComputer -Filter {OperatingSystem -like "*2012*"} | Format-Table Name,OperatingSystem
+
+recommendations:
+  P-ProtectedUsers:
+    title: Привилегированные УЗ не включены в группу «Protected Users»
+    type: Недостаток
+    segment: Серверный
+    count_label: привилегированные учётные записи
+    recommendation: |
+      Добавить все привилегированные учётные записи в группу «Protected Users»
+      и установить для них флаг «Account is sensitive and cannot be delegated».
+      Группа Protected Users отключает NTLM, не кэширует пароли пользователя
+      и форсирует AES — это снижает риски pass-the-hash и Kerberos-делегирования.
+    plumhound:
+    - file: AdminsWithout_ProtectedUsers
+      cols:
+      - User
+      - DisplayName
+      - Priv_Groups
+      - Enabled
+  P-UnconstrainedDelegation:
+    title: Учётные записи с неограниченным делегированием Kerberos
+    type: Уязвимость
+    segment: Серверный
+    count_label: учётные записи с неограниченным делегированием
+    recommendation: |
+      Отключить неограниченное делегирование (Unconstrained Delegation) на всех
+      учётных записях, кроме контроллеров домена. Перевести нужные сервисы на
+      Constrained Delegation или Resource-Based Constrained Delegation (RBCD).
+      Неограниченное делегирование позволяет извлекать TGT доменных администраторов
+      при их аутентификации на скомпрометированном сервере (Hot Potato / printer bug).
+    plumhound:
+    - file: Users_UnconstrainedDelegation
+      cols:
+      - User
+      - Description
+      - SPN
+    - file: Computers_UnconstrainedDelegationNonDC
+      cols:
+      - Hostname
+      - OS
+      - Enabled
+  P-DelegationKeyAdmin:
+    title: Группе «Key Admins» / «Enterprise Key Admins» делегированы избыточные права
+    type: Недостаток
+    segment: Серверный
+    count_label: избыточные делегирования
+    recommendation: |
+      Удалить из групп «Key Admins» и «Enterprise Key Admins» учётные записи, не
+      обслуживающие Windows Hello for Business / KeyCredentialLink. После
+      установки Windows Server 2016 группа получает права msDS-KeyCredentialLink
+      на объекты, что позволяет атакующему добавлять shadow credentials и
+      получать TGT любого пользователя.
+  P-AdminPwdTooOld:
+    title: Пароль привилегированной УЗ не менялся длительное время
+    type: Недостаток
+    segment: Серверный
+    count_label: учётные записи со старым паролем
+    recommendation: |
+      Произвести смену паролей всех привилегированных учётных записей. Установить
+      политику ротации не реже одного раза в 180 дней (для tier-0 — 90 дней).
+    plumhound:
+    - file: Users_gt012MoOldPasswords
+      cols:
+      - Username
+      - DisplayName
+      - Enabled
+      - AdminCount
+      - PWDLastSet
+  S-DesEnabled:
+    title: Учётные записи с включённой поддержкой DES
+    type: Уязвимость
+    segment: Серверный
+    count_label: учётные записи с включённым DES
+    recommendation: |
+      Снять флаг «Use Kerberos DES encryption types for this account» со всех
+      учётных записей. DES криптографически слаб (56-бит ключ) и брутфорсится
+      в течение часов. Заменить на AES128/AES256.
+    ldap_hint: |
+      Список можно получить запросом:
+      Get-ADUser -Filter "UserAccountControl -band 0x200000" -Properties UserAccountControl | Format-Table Name, SamAccountName
+  S-ADRegistrationSchema:
+    title: Схема AD содержит уязвимые классы регистрации устройств
+    type: Возможно недостаток
+    segment: Серверный
+    count_label: уязвимые классы схемы
+    recommendation: |
+      Проверить msDS-KeyCredentialLink на нестандартных объектах. После
+      установки Windows Server 2016 рядовой пользователь может регистрировать
+      устройства с правом записи KeyCredentials — это путь к shadow credentials.
+      Закрыть delegation на default container «Device Registration».
+  S-OS-W10:
+    title: Использование неподдерживаемых версий Windows 10 / 11
+    type: Уязвимость
+    segment: Пользовательский
+    count_label: устаревшие клиентские ОС-сборки
+    recommendation: |
+      Спланировать обновление клиентских машин до поддерживаемых версий Windows 10
+      (минимум 22H2) или Windows 11. Версии вне поддержки не получают security-обновлений.
+    ldap_hint: |
+      Список можно получить запросом:
+      Get-ADComputer -Filter {OperatingSystem -like "*Windows 10*"} -Properties OperatingSystem, OperatingSystemVersion | Where-Object {$_.OperatingSystemVersion -lt "10.0 (19045)"}
+  S-OS-2012:
+    title: Использование Windows Server 2012 / 2012 R2 (вышел из расширенной поддержки)
+    type: Уязвимость
+    segment: Серверный
+    count_label: серверы Windows Server 2012
+    recommendation: |
+      Спланировать миграцию всех серверов под управлением Windows Server 2012/2012 R2
+      на актуальные версии (Windows Server 2019/2022). Расширенная поддержка
+      завершилась 10.10.2023, security-обновления более не выпускаются. До миграции —
+      изолировать серверы в отдельный VLAN и ограничить сетевой доступ.
+    ldap_hint: |
+      Список 2012-серверов можно получить запросом:
+      Get-ADComputer -Filter {OperatingSystem -like "*2012*"} -Properties OperatingSystem | Format-Table Name, OperatingSystem, DistinguishedName
+  S-OS-2008:
+    title: Использование Windows Server 2008 / 2008 R2 (вне поддержки)
+    type: Уязвимость
+    segment: Серверный
+    count_label: серверы Windows Server 2008
+    recommendation: |
+      Срочно вывести из эксплуатации или мигрировать серверы Windows Server 2008/R2.
+      Расширенная поддержка завершилась 14.01.2020.
+  S-OS-XP:
+    title: Использование Windows XP / Server 2003 (вне поддержки более 10 лет)
+    type: Уязвимость
+    segment: Серверный
+    count_label: устаревшие ОС (XP / 2003)
+    recommendation: |
+      Полный вывод из эксплуатации в кратчайшие сроки. Системы уязвимы к MS17-010
+      (EternalBlue) и десяткам других неустранённых CVE.
+  S-PwdLastSet-90:
+    title: Учётные записи с паролем, не менявшимся более 3 лет
+    type: Недостаток
+    segment: Серверный
+    count_label: учётные записи с устаревшим паролем
+    recommendation: |
+      Принудительно сбросить пароли указанных учётных записей либо отключить их,
+      если они не используются. Включить мониторинг неактивных аккаунтов.
+    plumhound:
+    - file: Users_PWD_NeverOrReset
+      cols:
+      - Username
+      - DisplayName
+      - Enabled
+      - AdminCount
+      - PWDLastSet
+  S-PwdNeverExpires:
+    title: Пароль учётной записи никогда не истекает
+    type: Недостаток
+    segment: Серверный
+    count_label: учётные записи с неистекающим паролем
+    recommendation: |
+      Снять флаг «Password never expires» с учётных записей, не являющихся
+      сервисными. Для сервисных аккаунтов — перевести на gMSA (Group Managed
+      Service Accounts).
+    plumhound:
+    - file: Users_NeverExpirePasswords
+      cols:
+      - Name
+      - DisplayName
+      - Enabled
+      - PWDLastSet
+  S-DC-Inactive:
+    title: Учётная запись контроллера домена неактивна
+    type: Недостаток
+    segment: Серверный
+    count_label: неактивные контроллеры домена
+    recommendation: |
+      Удалить из AD устаревшие записи контроллеров домена (metadata cleanup).
+      Активные DC должны периодически обновлять свою УЗ в каталоге.
+  A-AdminSDHolder:
+    title: Подозрительная активность в контейнере AdminSDHolder
+    type: Возможно недостаток
+    segment: Серверный
+    count_label: подозрительные учётные записи
+    recommendation: |
+      Проверить ACL контейнера CN=AdminSDHolder. Любые нестандартные ACE могут
+      указывать на persistence-механизм (DCSync, modify membership). Откатить
+      ACL к baseline и расследовать источник изменений.
+  A-DCLdapsChannelBinding:
+    title: Не включён LDAPS Channel Binding на контроллерах домена
+    type: Недостаток
+    segment: Серверный
+    count_label: контроллеры домена без LDAPS Channel Binding
+    recommendation: |
+      Включить требование LDAP Channel Binding и Signing (политика
+      «Domain controller: LDAP server channel binding token requirements» = Always).
+      Без этого возможна атака NTLM relay через LDAPS.
+    plumhound:
+    - file: DomainControllers
+      cols:
+      - Hostname
+      - OS
+      - Created
+      - Enabled
+  A-DCLdapSign:
+    title: Не требуется LDAP Signing на контроллерах домена
+    type: Недостаток
+    segment: Серверный
+    count_label: контроллеры домена без LDAP Signing
+    recommendation: |
+      Включить «Domain controller: LDAP server signing requirements» = Require signing.
+      Это защищает от подмены/перехвата LDAP-трафика.
+    plumhound:
+    - file: DomainControllers
+      cols:
+      - Hostname
+      - OS
+      - Created
+      - Enabled
+  A-LAPS-NOT-Installed:
+    title: Не развёрнут LAPS (управление локальными паролями администратора)
+    type: Недостаток
+    segment: Пользовательский
+    count_label: компьютеры без LAPS
+    recommendation: |
+      Развернуть Windows LAPS (Local Administrator Password Solution) для
+      уникализации паролей локального администратора на всех рабочих станциях
+      и серверах. Без LAPS любая компрометация одного хоста с известным паролем
+      локального админа открывает доступ ко всем хостам организации.
+    plumhound:
+    - file: LAPSNotEnabled
+      cols:
+      - Computer
+      - ObjectEnabled
+      - OS
+  A-MinPwdLen:
+    title: Слишком короткая минимальная длина пароля в политике домена
+    type: Недостаток
+    segment: Серверный
+    count_label: (текущее значение)
+    recommendation: |
+      Установить минимальную длину пароля доменной политики не менее 12 символов
+      (для администраторов — 14+). Текущее значение не соответствует современным
+      требованиям к стойкости паролей.
+    plumhound:
+    - file: WeakMinPasswordLength
+      cols:
+      - DomainName
+      - MinPwdLength
+  A-PreWin2000Anonymous:
+    title: Группа «Pre-Windows 2000 Compatible Access» содержит Anonymous
+    type: Уязвимость
+    segment: Серверный
+    count_label: проблемные члены группы
+    recommendation: |
+      Удалить «ANONYMOUS LOGON» из группы «Pre-Windows 2000 Compatible Access».
+      Иначе возможно анонимное перечисление объектов AD (null session).
+    plumhound:
+    - file: PreWindows2000
+      cols: []
+  A-NoNet-Disable:
+    title: Не отключено хранение паролей в обратимом виде
+    type: Недостаток
+    segment: Серверный
+    count_label: учётные записи с обратимым шифрованием пароля
+    recommendation: |
+      Снять флаг «Store password using reversible encryption» со всех
+      учётных записей. Восстанавливается до plaintext через DCSync.
+  A-MachineAccountQuota:
+    title: MachineAccountQuota разрешает рядовым пользователям добавлять компьютеры в домен
+    type: Недостаток
+    segment: Серверный
+    count_label: (текущее значение MAQ)
+    recommendation: |
+      Установить ms-DS-MachineAccountQuota = 0 на уровне домена и делегировать
+      право добавления компьютеров отдельной группе. MAQ=10 (по умолчанию)
+      позволяет атакующему создавать произвольные computer-объекты и эксплуатировать
+      их для RBCD-атак.
+  A-HardenedPaths:
+    title: Изменены / ослаблены Hardened UNC Paths
+    type: Недостаток
+    segment: Серверный
+    count_label: ослабленные правила UNC Paths
+    recommendation: |
+      Восстановить дефолтные требования к UNC paths SYSVOL/NETLOGON: установить
+      политику «Computer Configuration → Policies → Administrative Templates →
+      Network → Network Provider → Hardened UNC Paths» в значение
+      RequireMutualAuthentication=1, RequireIntegrity=1, RequirePrivacy=1.
+      Без этого возможна подмена GPO/скриптов MITM-атакующим в сегменте.
+  S-WSUS-HTTP:
+    title: WSUS использует незашифрованный HTTP
+    type: Уязвимость
+    segment: Серверный
+    count_label: WSUS-серверы по HTTP
+    recommendation: |
+      Переключить WSUS на HTTPS (порты 8531/443). HTTP-трафик WSUS можно
+      перехватить и подменить (атака WSUSpect / SharpWSUS) для выполнения
+      произвольного кода на клиентах при следующей установке обновлений.
+  A-PreWin2000Other:
+    title: Подозрительные участники группы «Pre-Windows 2000 Compatible Access»
+    type: Недостаток
+    segment: Серверный
+    count_label: подозрительные участники группы
+    recommendation: |
+      Проверить состав группы Pre-Windows 2000 Compatible Access. В неё должны
+      входить только Authenticated Users (если требуется обратная совместимость)
+      или быть пустой. Сторонние пользователи/компьютеры в этой группе получают
+      доступ к чтению объектов AD без обычных ограничений.
+    plumhound:
+    - file: PreWindows2000
+      cols:
+      - Name
+      - DisplayName
+      - Enabled
+      - Description
+  A-WeakRSARootCert2:
+    title: В trust-хранилище присутствуют сертификаты со слабым RSA-ключом
+    type: Уязвимость
+    segment: Серверный
+    count_label: сертификаты со слабым RSA
+    recommendation: |
+      Удалить из NTAuth / Enterprise Trust / Trusted Root доверенные сертификаты
+      с длиной RSA-ключа менее 2048 бит. Слабые ключи поддаются факторизации и
+      позволяют подделывать сертификаты для аутентификации.
+  S-OS-Win7:
+    title: Использование Windows 7 (вне поддержки с 14.01.2020)
+    type: Уязвимость
+    segment: Пользовательский
+    count_label: машины с Windows 7
+    recommendation: |
+      Вывести из эксплуатации все станции под управлением Windows 7. Система
+      не получает security-обновлений и уязвима ко множеству неустранённых
+      CVE (включая EternalBlue / BlueKeep).
+    ldap_hint: |
+      Список можно получить запросом:
+      Get-ADComputer -Filter {OperatingSystem -like "*Windows 7*"} -Properties OperatingSystem | Format-Table Name, OperatingSystem
+  A-DCLdapsProtocolAdvanced:
+    title: Контроллеры домена принимают подключения по TLS 1.0 / 1.1
+    type: Недостаток
+    segment: Серверный
+    count_label: контроллеры домена со старым TLS
+    recommendation: |
+      Отключить поддержку TLS 1.0 и TLS 1.1 на всех DC (ключ реестра
+      HKLM\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\SCHANNEL\\Protocols).
+      Оставить только TLS 1.2 и выше. Старые версии TLS уязвимы к BEAST / POODLE /
+      lucky-13 и не должны использоваться для аутентификации.
+    plumhound:
+    - file: DomainControllers
+      cols:
+      - Hostname
+      - OS
+      - Created
+      - Enabled
+  A-DsHeuristicsLDAPSecurity:
+    title: Не настроен атрибут dsHeuristics для усиления LDAP-безопасности
+    type: Недостаток
+    segment: Серверный
+    count_label: ненастроенные биты dsHeuristics
+    recommendation: |
+      Установить dsHeuristics 7-й и 9-й биты так, чтобы потребовать LDAP signing
+      и Channel Binding (значение «0000000010000002» или эквивалентное в текущей
+      конфигурации). Это лишает атакующего возможности эксплуатировать NTLM relay
+      на LDAP/LDAPS.
+  A-NoServicePolicy:
+    title: Отсутствует Fine-Grained Password Policy для сервисных УЗ
+    type: Недостаток
+    segment: Серверный
+    recommendation: |
+      Создать отдельную Fine-Grained Password Policy (PSO) с минимальной длиной
+      пароля 25+ символов для группы service-accounts. Сервисные УЗ — главная
+      мишень Kerberoasting; без длинного пароля TGS-REP можно брутфорсить оффлайн.
+  A-PreWin2000AuthenticatedUsers:
+    title: В группу «Pre-Windows 2000 Compatible Access» включены Authenticated Users
+    type: Недостаток
+    segment: Серверный
+    count_label: члены группы
+    recommendation: |
+      Удалить «Authenticated Users» из группы Pre-Windows 2000 Compatible Access,
+      если в домене нет легаси-приложений, требующих этого. Иначе любой
+      аутентифицированный пользователь домена получает чтение объектов AD без
+      обычных ограничений (в т.ч. LAPS-паролей при некорректных ACL).
+    plumhound:
+    - file: PreWindows2000
+      cols:
+      - Name
+      - DisplayName
+      - Enabled
+      - Description
+  A-SHA1RootCert:
+    title: В trust-хранилище присутствуют корневые сертификаты, подписанные SHA-1
+    type: Уязвимость
+    segment: Серверный
+    count_label: корневые SHA-1 сертификаты
+    recommendation: |
+      Удалить корневые сертификаты с подписью SHA-1 из NTAuth / Enterprise Trust
+      / Trusted Root. SHA-1 уязвим к коллизионным атакам (SHAttered, 2017);
+      сертификаты с SHA-1 не должны использоваться для аутентификации в AD.
+  P-AdminEmailOn:
+    title: У привилегированных УЗ заполнено поле «E-mail»
+    type: Недостаток
+    segment: Серверный
+    count_label: админские УЗ с e-mail
+    recommendation: |
+      Очистить атрибут mail у tier-0 учётных записей. Привилегированные УЗ не
+      должны использоваться для повседневной переписки и не должны иметь
+      доступного e-mail-адреса, через который их можно фишинговать.
+    plumhound:
+    - file: AdminGroups_Email
+      cols:
+      - Username
+      - E_mail
+      - type
+  S-DefaultOUChanged:
+    title: Изменён контейнер по умолчанию для компьютеров / пользователей
+    type: Возможно недостаток
+    segment: Серверный
+    count_label: изменённые OU по умолчанию
+    recommendation: |
+      Проверить redircmp / redirusr — куда теперь попадают вновь создаваемые
+      объекты. Убедиться что нестандартное OU имеет корректные GPO и ACL.
+      Изменение default container — нормальная практика, но требует ревью прав.
+  S-FunctionalLevel4:
+    title: Functional level домена / леса ниже Windows Server 2008 R2
+    type: Недостаток
+    segment: Серверный
+    count_label: (текущий functional level)
+    recommendation: |
+      Поднять functional level домена и леса до Windows Server 2016 (минимум
+      2008 R2). Низкий уровень блокирует современные функции безопасности:
+      AES-only Kerberos, claim-based authentication, PKINIT Freshness, gMSA.
+  A-AnonymousAuthorizedGPO:
+    title: GPO разрешают анонимный доступ
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из ACL GPO права для Anonymous Logon. Анонимный доступ к GPO позволяет читать (и в худшем случае модифицировать) политики без аутентификации.
+    count_label: GPO с анонимным доступом
+  A-AuditDC:
+    title: На контроллерах домена не настроен advanced audit policy
+    type: Недостаток
+    segment: Серверный
+    recommendation: 'Включить advanced audit policy на DC: Account Logon, Logon/Logoff, Account Management, DS Access, Policy Change, Privilege Use, System. Без аудита расследование инцидентов невозможно.'
+    count_label: DC без advanced audit
+  A-AuditPowershell:
+    title: PowerShell ScriptBlock Logging не включён
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Включить PowerShell Module Logging + Script Block Logging через GPO (Computer Configuration → Administrative Templates → Windows Components → Windows PowerShell). Без этого расследование PowerShell-атак (Empire, Cobalt Strike, malicious scripts) невозможно.
+    count_label: хосты без PS-логирования
+  A-BackupMetadata:
+    title: Резервное копирование AD не выполнялось длительное время
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Настроить регулярное резервное копирование Active Directory (windows-server-backup, IFM-backup). Без свежего бэкапа в случае ransomware / DCSync / SID History injection восстановление невозможно.
+    count_label: (давно нет бэкапа AD)
+  A-BadSuccessor:
+    title: 'BadSuccessor: dMSA-attack vector (CVE-2025-21293)'
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Применить обновления для CVE BadSuccessor. Удалить право создания dMSA (delegated Managed Service Accounts) у непривилегированных пользователей. Эта атака позволяет получить домен-админ через манипуляцию атрибутом msDS-ManagedAccountPrecededByLink.
+    count_label: уязвимых OU
+  A-CertEnrollChannelBinding:
+    title: 'ADCS: Channel Binding не включён на CA'
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Включить Channel Binding на Certificate Authority через ConfigCA. Без Channel Binding возможна атака ESC11 — NTLM relay к ADCS Enrollment endpoint.
+    count_label: CA без Channel Binding
+  A-CertEnrollHttp:
+    title: ADCS Web Enrollment доступен по HTTP (ESC8)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Отключить HTTP-биндинги Web Enrollment (CertSrv) — оставить только HTTPS. Включить EPA. ESC8 (PetitPotam → relay → ADCS) — самая массовая практическая атака на AD за последние годы.
+    count_label: CA с HTTP-enrollment
+  A-CertROCA:
+    title: 'ADCS: используются сертификаты, уязвимые к ROCA (CVE-2017-15361)'
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Перевыпустить все сертификаты, сгенерированные на уязвимом криптопроцессоре Infineon TPM (RSALib до 1.02.013). ROCA позволяет восстановить приватный ключ за разумное время даже для 2048-битных ключей. Использовать ROCA detection tool для проверки.
+
+      Запретить выпуск новых сертификатов с проблемными RSA-ключами через политику CA.
+    count_label: ROCA-уязвимых сертификатов
+  A-CertTempAgent:
+    title: 'ADCS: шаблон сертификата с EKU «Certificate Request Agent» (ESC3)'
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Удалить EKU «Certificate Request Agent» (1.3.6.1.4.1.311.20.2.1) с шаблонов сертификатов, доступных рядовым пользователям. Этот EKU позволяет владельцу выпускать сертификаты от имени других пользователей (ESC3-атака в Certified Pre-Owned).
+
+      Если EKU необходим — ограничить список enrollment agents и subjects через Certificate Manager Restrictions.
+    count_label: шаблонов с Enrollment Agent
+  A-CertTempAnyPurpose:
+    title: 'ADCS: шаблон сертификата с EKU «Any Purpose» / без EKU (ESC2)'
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить EKU «Any Purpose» (2.5.29.37.0) или «Subordinate Certification Authority» со всех шаблонов, доступных не-CA пользователям. Эти EKU позволяют использовать сертификат как промежуточный CA для подписи произвольных сертификатов (ESC2).
+    count_label: опасных шаблонов сертификатов
+  A-CertTempAnyone:
+    title: 'ADCS: шаблон сертификата доступен Authenticated Users / Domain Users'
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Ограничить право Enroll на шаблонах сертификатов конкретными группами (не Authenticated Users / Domain Users). Если шаблон содержит EKU «Client Authentication» или «Smart Card Logon» и доступен всем — это путь к импersonation любого пользователя (ESC1/ESC2/ESC3).
+
+      Проверить msPKI-Certificate-Name-Flag (ENROLLEE_SUPPLIES_SUBJECT) — должен быть 0 для пользователе-доступных шаблонов.
+    count_label: опасных шаблонов сертификатов
+  A-CertTempCustomSubject:
+    title: 'ADCS: шаблон сертификата позволяет указывать произвольный Subject (ESC1)'
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Снять флаг msPKI-Certificate-Name-Flag = ENROLLEE_SUPPLIES_SUBJECT (бит 1) у шаблонов с EKU Client Authentication. ESC1 позволяет любому пользователю с правом Enroll получить сертификат с произвольным UPN в Subject — то есть аутентифицироваться от имени любого пользователя домена, включая администратора.
+
+      Либо использовать pkinit_freshness_extension (Windows Server 2022).
+    count_label: ESC1-уязвимых шаблонов
+  A-CertTempNoSecurity:
+    title: 'ADCS: шаблон сертификата выпускается без согласования (No Approval)'
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Включить «CA certificate manager approval» на шаблонах с критичными EKU (Client Authentication, Smart Card Logon). Это требует ручной валидации каждого запроса администратором CA и не даёт автоматически выпускать сертификаты по уязвимым шаблонам.
+    count_label: шаблонов без апрува
+  A-CertWeakDSA:
+    title: 'ADCS: используются сертификаты с DSA-ключами'
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Перевыпустить все сертификаты с DSA-ключами на RSA ≥ 2048 / ECDSA. DSA устарел, низкая криптостойкость.
+    count_label: сертификатов с DSA
+  A-CertWeakRsaComponent:
+    title: 'ADCS: компонент RSA-ключа со слабым подписьным алгоритмом'
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Перевыпустить компоненты PKI (intermediate / root cert), использующие слабый алгоритм подписи. Минимум — SHA-256 + RSA-2048.
+    count_label: компонентов со слабым RSA
+  A-DC-Coerce:
+    title: Контроллеры домена уязвимы к атакам coercion (PetitPotam / DFSCoerce)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Применить митигации против coercion-атак на DC:
+        • установить KB5005413 + настроить параметры реестра против PetitPotam (EFSRPC);
+        • установить обновления для DFSCoerce и PrinterBug (Print Spooler);
+        • включить EPA (Extended Protection for Authentication) на LDAPS и AD CS Web;
+        • заблокировать NTLM relay в AD CS (включить «Force HTTPS», EPA, отключить HTTP).
+
+      Без митигаций атакующий принуждает DC аутентифицироваться к ADCS, релеит NTLM и получает сертификат DC → KRBTGT → Golden Ticket.
+    count_label: уязвимых контроллеров домена
+  A-DC-Spooler:
+    title: На контроллерах домена включён Print Spooler (PrinterBug)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Отключить службу Print Spooler на всех контроллерах домена:
+        Stop-Service Spooler; Set-Service Spooler -StartupType Disabled
+
+      Print Spooler на DC уязвим к атаке PrinterBug (MS-RPRN) — атакующий принуждает DC аутентифицироваться к произвольному хосту, что используется для coercion → relay (см. SpoolSample, dementor.py).
+    count_label: DC с включённым Print Spooler
+  A-DC-WebClient:
+    title: На контроллерах домена включена служба WebClient
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Отключить службу WebClient на DC: Stop-Service WebClient; Set-Service WebClient -StartupType Disabled. WebClient (WebDAV) на DC уязвим к coercion-атакам (PrivExchange-style) и используется для NTLM relay к ADCS.'
+    count_label: DC с включённым WebClient
+  A-DCLdapsProtocol:
+    title: Контроллеры домена принимают подключения по SSLv3 / TLS 1.0
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Отключить SSLv2/SSLv3/TLS 1.0/TLS 1.1 на всех DC через ключи реестра HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\. Оставить только TLS 1.2 и TLS 1.3. Старые протоколы уязвимы к BEAST, POODLE, Lucky 13.
+    count_label: DC со старым TLS
+  A-DCRefuseComputerPwdChange:
+    title: Контроллеры домена не принимают смену машинных паролей
+    type: Недостаток
+    segment: Серверный
+    recommendation: Проверить параметры RefusePasswordChange в GPO Default Domain Controllers Policy. DC должны принимать машинную смену пароля от членов домена.
+    count_label: DC с отключённой сменой паролей
+  A-DnsZoneAUCreateChild:
+    title: У Authenticated Users право CreateChild на DNS-зону
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Удалить ACE «Authenticated Users: Create All Child Objects» с DNS-зон. Это право позволяет создавать произвольные DNS-записи, что используется для атаки на WPAD / SMB-relay (DNSAdmins-style attack без членства).'
+    count_label: зон с правом CreateChild для всех
+  A-DnsZoneTransfert:
+    title: Разрешён DNS Zone Transfer для всех
+    type: Недостаток
+    segment: Серверный
+    recommendation: Ограничить DNS Zone Transfer списком конкретных IP secondary-серверов (dnscmd /ZoneResetSecondaries). Открытый AXFR раскрывает структуру внутренней сети — типичный recon-шаг при пентесте.
+    count_label: зон с открытым AXFR
+  A-DnsZoneUpdate1:
+    title: DNS-зона разрешает Insecure dynamic updates
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Установить тип динамических обновлений = «Secure only» на всех DNS-зонах. Insecure updates позволяют любому хосту перезаписать любую DNS-запись (включая записи DC).
+    count_label: зон с insecure updates
+  A-DnsZoneUpdate2:
+    title: DNS-зона разрешает Non-secure or secure dynamic updates
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Перевести зону на «Secure only» dynamic updates.
+    count_label: зон с insecure updates
+  A-DsHeuristicsAllowAnonNSPI:
+    title: dsHeuristics разрешает анонимный NSPI (LDAP-RPC)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Сбросить бит fAllowAnonNSPI в dsHeuristics. Анонимный NSPI позволяет перечислять GAL без аутентификации.
+    count_label: '(dsHeuristics: AllowAnonNSPI)'
+  A-DsHeuristicsAnonymous:
+    title: dsHeuristics разрешает анонимный bind к AD
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Сбросить бит fLDAPBlockAnonOps в dsHeuristics (значение по умолчанию). Анонимные операции должны быть запрещены.
+    count_label: '(dsHeuristics: anonymous bind)'
+  A-DsHeuristicsDoNotVerifyUniqueness:
+    title: dsHeuristics отключает проверку уникальности SPN
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Сбросить fDoNotVerifyUniqueness в dsHeuristics. Без проверки уникальности SPN возможна регистрация дублирующего SPN на УЗ атакующего → перехват Kerberos-запросов.
+    count_label: (SPN uniqueness отключена)
+  A-Guest:
+    title: Гостевая аутентификация на SMB / шарах разрешена
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Запретить guest authentication на SMB-клиенте: GPO «Network security: Allow LocalSystem NULL session fallback» = Disabled + установить AllowInsecureGuestAuth=0 (HKLM\...\LanmanWorkstation\Parameters).'
+    count_label: хосты с guest SMB
+  A-Krbtgt:
+    title: Пароль учётной записи krbtgt не менялся более года
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Произвести двукратную смену пароля krbtgt с интервалом >10 часов (скрипт Microsoft Reset-KrbTgt-Password.ps1).
+
+      Без ротации, если атакующий когда-либо получал NT-хеш krbtgt (через DCSync, компрометацию DC), он сохраняет возможность создавать Golden Ticket для любого пользователя домена. Рекомендуемая частота — каждые 6-12 месяцев и обязательно после любого подозрения на компрометацию tier-0.
+    count_label: (пароль krbtgt не ротирован)
+  A-LAPS-Joined-Computers:
+    title: LAPS пропущены значительная часть компьютеров домена
+    type: Недостаток
+    segment: Пользовательский
+    recommendation: Расширить покрытие LAPS на все workstation и member-сервера домена. Проверить GPO scope и фильтры — должны охватывать все актуальные компьютеры.
+    count_label: компьютеров без LAPS
+  A-LAPS-Not-Installed:
+    title: Не развёрнут LAPS / Windows LAPS
+    type: Уязвимость
+    segment: Пользовательский
+    recommendation: Развернуть Windows LAPS (встроен в Windows Server 2019+) или legacy Microsoft LAPS на все workstation и member server. Без LAPS пароль локального администратора одинаков на множестве хостов; компрометация одного → доступ ко всем (классический lateral movement / pass-the-hash).
+    count_label: хостов без LAPS
+  A-LDAPSigningDisabled:
+    title: LDAP Signing отключён на контроллерах домена
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Установить GPO «Domain controller: LDAP server signing requirements» = «Require signing». Без подписи возможен NTLM relay к LDAP, что даёт DCSync права.'
+    count_label: DC без LDAP Signing
+  A-LMHashAuthorized:
+    title: Разрешено хранение LM-хешей паролей
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Установить «Network security: Do not store LAN Manager hash value on next password change» = Enabled. LM-хеши тривиально крекаются rainbow-таблицами.'
+    count_label: хостов с LM-хешами
+  A-LimitBlankPasswordUse:
+    title: Пустые пароли разрешены для сетевого входа
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Установить «Accounts: Limit local account use of blank passwords to console logon only» = Enabled. Иначе УЗ с пустым паролем доступна по SMB / RDP.'
+    count_label: хостов с разрешёнными пустыми паролями
+  A-MD2IntermediateCert:
+    title: В trust-хранилище intermediate-сертификаты с MD2
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из NTAuth / Intermediate Certification Authorities сертификаты, подписанные MD2. MD2 уязвим к коллизионным атакам.
+    count_label: MD2 intermediate сертификатов
+  A-MD2RootCert:
+    title: В trust-хранилище корневой сертификат, подписанный MD2
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из Trusted Root корневые сертификаты с подписью MD2. MD2 уязвим к коллизиям, используется только в legacy-сертификатах 90-х годов.
+    count_label: MD2 корневых сертификатов
+  A-MD4IntermediateCert:
+    title: В trust-хранилище intermediate-сертификаты с MD4
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из trust-хранилища сертификаты, подписанные MD4.
+    count_label: MD4 intermediate сертификатов
+  A-MD4RootCert:
+    title: В trust-хранилище корневой сертификат, подписанный MD4
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из Trusted Root корневые сертификаты с подписью MD4.
+    count_label: MD4 корневых сертификатов
+  A-MD5IntermediateCert:
+    title: В trust-хранилище intermediate-сертификат, подписанный MD5
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из Intermediate Certification Authorities сертификаты с подписью MD5. MD5 уязвим к коллизиям (Flame malware, 2012).
+    count_label: MD5 intermediate сертификатов
+  A-MD5RootCert:
+    title: В trust-хранилище корневой сертификат, подписанный MD5
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из Trusted Root корневые сертификаты с подписью MD5. Использовались для атаки Flame malware (2012) — подделка сертификата Microsoft Terminal Server.
+    count_label: MD5 корневых сертификатов
+  A-MembershipEveryone:
+    title: Группа содержит Everyone / Authenticated Users в составе
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить псевдогруппы Everyone, Authenticated Users, Domain Users из явного состава доменных групп (особенно привилегированных). Эти токены добавляются автоматически при logon — явное включение в группу часто является следствием некорректного восстановления или атаки.
+    count_label: групп с Everyone в составе
+  A-NTFRSOnSysvol:
+    title: SYSVOL реплицируется через NTFRS (deprecated)
+    type: Недостаток
+    segment: Серверный
+    recommendation: Мигрировать SYSVOL-репликацию с NTFRS на DFSR (dfsrmig /SetGlobalState 3 → /SetGlobalState 4). NTFRS deprecated, не поддерживается на современных DC и подвержен ошибкам тихой потери данных.
+    count_label: (SYSVOL на NTFRS)
+  A-NoGPOLLMNR:
+    title: LLMNR не отключён через GPO
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Отключить LLMNR через GPO «Computer Configuration → Administrative Templates → Network → DNS Client → Turn off Multicast Name Resolution» = Enabled. LLMNR — один из основных векторов NTLM relay через Responder.
+    count_label: (LLMNR не отключён)
+  A-NoNetSessionHardening:
+    title: Не настроен NetCease / Net Session Hardening
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: 'Применить скрипт NetCease.ps1 или вручную ограничить чтение Net Session: удалить право на чтение для Authenticated Users в ключе HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\DefaultSecurity\SrvsvcSessionInfo. Без этого любая УЗ домена может перечислить активные SMB-сессии (recon для lateral movement).'
+    count_label: (NetCease не применён)
+  A-NotEnoughDC:
+    title: Недостаточное количество контроллеров домена
+    type: Недостаток
+    segment: Серверный
+    recommendation: Развернуть как минимум 2 контроллера домена (рекомендуется ≥3 для устойчивости). Единственный DC = single point of failure и тормоз для всей доменной аутентификации.
+    count_label: текущих DC
+  A-NullSession:
+    title: Контроллеры домена принимают анонимные SMB-сессии (null session)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Отключить null session на DC через политику «Network access: Restrict anonymous access to Named Pipes and Shares» и удалить любые pipes/shares из «Network access: Named Pipes that can be accessed anonymously».
+
+      Null session позволяет анонимно перечислять пользователей, группы, share — это первый шаг во многих pre-auth атаках.
+    count_label: DC с null session
+  A-ProtectedUsers:
+    title: Привилегированные УЗ не в группе Protected Users
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Добавить привилегированные УЗ в Protected Users. Группа отключает NTLM, не кэширует пароли и форсит AES.
+    count_label: привилегированных УЗ вне Protected Users
+  A-PwdGPO:
+    title: GPO содержит cpassword (CVE-2014-1812 / Group Policy Preferences)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из всех GPO элементы Group Policy Preferences с атрибутом cpassword (Users, Services, Scheduled Tasks). Ключ AES для расшифровки опубликован Microsoft, любой пользователь может извлечь plaintext-пароль (PowerSploit Get-GPPPassword).
+    count_label: GPO с cpassword
+  A-ReversiblePwd:
+    title: Учётные записи с обратимым шифрованием пароля
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Снять флаг ENCRYPTED_TEXT_PASSWORD_ALLOWED (бит 0x80 в userAccountControl) у всех пользователей. С этим флагом Windows хранит пароль в виде, обратимом до plaintext, и атакующий может извлечь его через DCSync (Mimikatz lsadump::dcsync).
+    count_label: УЗ с обратимым шифрованием
+  A-RootDseAnonBinding:
+    title: RootDSE доступен для анонимного bind
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Отключить анонимный LDAP bind через dsHeuristics (fLDAPBlockAnonOps). Анонимный bind к RootDSE раскрывает версии схемы, имена доменов, FSMO-роли — информацию для recon.
+    count_label: (анонимный bind к RootDSE)
+  A-SHA0IntermediateCert:
+    title: В trust-хранилище intermediate-сертификат, подписанный SHA-0
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из trust-хранилища intermediate-сертификаты с подписью SHA-0. SHA-0 криптографически сломан с 2004 года.
+    count_label: SHA-0 intermediate сертификатов
+  A-SHA0RootCert:
+    title: В trust-хранилище корневой сертификат, подписанный SHA-0
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из Trusted Root корневые сертификаты с подписью SHA-0.
+    count_label: SHA-0 корневых сертификатов
+  A-SHA1IntermediateCert:
+    title: В trust-хранилище intermediate-сертификат, подписанный SHA-1
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из Intermediate Certification Authorities сертификаты с подписью SHA-1. SHA-1 уязвим к коллизиям с 2017 года (SHAttered).
+    count_label: SHA-1 intermediate сертификатов
+  A-SMB2SignatureNotEnabled:
+    title: SMB2 Signing не включён
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Включить SMB2 signing через GPO «Microsoft network server: Digitally sign communications (always)» = Enabled. Без подписи SMB-трафика возможен NTLM relay через SMB.'
+    count_label: хостов без SMB2 Signing
+  A-SMB2SignatureNotRequired:
+    title: SMB2 Signing не требуется обязательно
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Установить требование SMB signing = «Always required» (а не «If client agrees»). Опциональная подпись позволяет атакующему делать downgrade и проводить relay.
+    count_label: хостов с опциональным SMB Signing
+  A-SmartCardPwdRotation:
+    title: SmartCardRequired УЗ не имеют ротации NT-хеша
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Применить политику ротации NT-хешей smart-card УЗ: раз в 6 месяцев снимать и снова устанавливать SmartCardRequired (форсит регенерацию пароля).'
+    count_label: УЗ без ротации smartcard-хеша
+  A-SmartCardRequired:
+    title: Привилегированная УЗ с SmartCardRequired имеет статический NT-хеш
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      При установленном флаге «Smart card is required for interactive logon» Windows генерирует случайный пароль один раз и не ротирует его. Если хеш такой УЗ когда-либо был скомпрометирован (DCSync), он остаётся валидным навсегда.
+
+      Раз в 6 месяцев снимать и снова устанавливать флаг SmartCardRequired — это форсит генерацию нового пароля и инвалидирует старые хеши.
+    count_label: УЗ со статическим хешем
+  A-UnixPwd:
+    title: УЗ имеют Unix-атрибут пароля (msSFU30-Password / unixUserPassword)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Очистить атрибуты Unix-пароля (unixUserPassword, msSFU30-Password) у всех УЗ. Эти атрибуты часто содержат пароль в crypt-хешировании, читаются Authenticated Users по умолчанию.
+    count_label: УЗ с Unix-паролем
+  A-WSUS-SslProtocol:
+    title: WSUS использует устаревший SSL/TLS протокол
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Настроить WSUS на использование только TLS 1.2+. Отключить SSLv3 / TLS 1.0 / TLS 1.1 на WSUS-сервере.
+    count_label: WSUS-серверов с устаревшим TLS
+  A-WeakRSARootCert:
+    title: В trust-хранилище корневой сертификат со слабым RSA-ключом
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из Trusted Root сертификаты с RSA < 2048 бит. Слабые ключи поддаются факторизации.
+    count_label: слабых корневых сертификатов
+  P-AdminLogin:
+    title: Пароль учётной записи Administrator не менялся длительное время
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Сменить пароль встроенной УЗ Administrator (RID 500). Установить процедуру ротации не реже одного раза в 6 месяцев. Эта УЗ — главная мишень атак (нельзя lock out, всегда существует), её хеш используется в pass-the-hash, скомпрометированный пароль действителен всегда.
+    count_label: (пароль built-in Administrator не ротирован)
+  P-AdminNum:
+    title: Слишком много привилегированных учётных записей
+    type: Недостаток
+    segment: Серверный
+    recommendation: Сократить число членов Domain Admins / Enterprise Admins до 3-5. Для повседневных задач использовать tier-1 admins. Чем больше DA — тем выше вероятность компрометации одной из них.
+    count_label: привилегированных УЗ
+  P-ControlPathIndirectEveryone:
+    title: Группа Everyone имеет непрямой control path до привилегированных объектов
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Провести аудит ACL объектов AD: найти и устранить цепочки прав, ведущие от псевдогруппы Everyone к привилегированным объектам (Domain Admins, Schema Admins, контроллеры домена). Использовать BloodHound для построения графа путей атаки.
+
+      Удалить избыточные ACE с Everyone / Authenticated Users / Domain Users на tier-0 объектах.
+    count_label: control path к привилегиям
+  P-ControlPathIndirectMany:
+    title: Большое число УЗ имеет непрямой control path до привилегий
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Провести аудит непрямых путей повышения привилегий через цепочки ACL (WriteOwner → ResetPassword, GenericAll → AddSelf-to-group, и т.п.). Использовать BloodHound (Cypher-запросы) для выявления коротких путей от непривилегированных УЗ до Domain Admins.
+
+      Применить tiered admin model: разделить tier-0/1/2 учётные записи, запретить кросс-тиер logon.
+    count_label: УЗ с control path к привилегиям
+  P-DCOwner:
+    title: Нестандартный владелец (Owner) объекта контроллера домена
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Восстановить владельца computer-объектов DC в Domain Admins / Enterprise Admins. Владелец имеет неявное право WriteDACL — может выдать себе любые права на DC (включая delegation, что ведёт к domain takeover).
+    count_label: DC с нестандартным владельцем
+  P-DNSAdmin:
+    title: Группа DnsAdmins имеет членов вне tier-0
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из DnsAdmins всех, кому это не нужно. DnsAdmins позволяет загрузить DLL в DNS-службу на DC через dnscmd → RCE с правами SYSTEM на DC.
+    count_label: нештатных DnsAdmins
+  P-DNSDelegation:
+    title: DnsAdmins имеет нештатных членов
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить непривилегированных пользователей из DnsAdmins. DnsAdmins = DLL injection в DNS-службу на DC = RCE на DC.
+    count_label: нештатных в DnsAdmins
+  P-DangerousExtendedRight:
+    title: Делегированы опасные Extended Rights в AD
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Аудитировать Extended Rights (DS-Replication-Get-Changes-All, User-Force-Change-Password, и т.п.). DCSync права не должны быть у не-tier-0 УЗ.
+    count_label: опасных делегирований
+  P-Delegated:
+    title: Пользователям делегированы избыточные права над OU / привилегированными объектами
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Провести аудит делегированных прав (Delegation of Control) на OU и tier-0 объекты. Удалить ACE для непривилегированных пользователей. Использовать BloodHound для визуализации непрямых путей повышения привилегий через делегированные права.
+    count_label: избыточных делегирований
+  P-DelegationDCa2d2:
+    title: Constrained delegation на DC-сервис (A2D2)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить msDS-AllowedToDelegateTo, указывающий на сервисы DC, у не-DA УЗ. Это позволяет получить TGS на критичные сервисы DC (cifs/, ldap/) — путь к domain takeover.
+    count_label: A2D2 на DC
+  P-DelegationDCsourcedeleg:
+    title: Resource-Based Constrained Delegation на DC
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Очистить msDS-AllowedToActOnBehalfOfOtherIdentity на computer-объектах DC. RBCD на DC = атакующий с правом WriteAccount на DC получает доменадмина.
+    count_label: DC с RBCD
+  P-DelegationDCt2a4d:
+    title: Constrained delegation with protocol transition на DC (T2A4D)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить TRUSTED_TO_AUTH_FOR_DELEGATION + msDS-AllowedToDelegateTo на сервисы DC. Protocol transition позволяет получить TGS от имени любого пользователя — без необходимости его пароля.
+    count_label: T2A4D на DC
+  P-DelegationEveryone:
+    title: Делегированы избыточные права для Everyone
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить ACE для Everyone / Authenticated Users / Domain Users на критичных объектах AD.
+    count_label: делегирований для Everyone
+  P-DelegationFileDeployed:
+    title: GPO деплоит файлы из делегированного пути
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из GPO деплой файлов из путей с правом записи непривилегированных пользователей. Подменённый файл = RCE на всех целевых хостах.
+    count_label: GPO с делегированным деплоем
+  P-DelegationGPOData:
+    title: Делегированы права на запись в GPO непривилегированным УЗ
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить право Write на GPO у непривилегированных пользователей. GPO применяются на DC и member-серверах с правами SYSTEM — модификация GPO непривилегированной УЗ ведёт к выполнению произвольного кода на всех хостах в области действия (атака SharpGPOAbuse).
+    count_label: GPO с делегированной записью
+  P-DelegationLoginScript:
+    title: Делегированы права на запись Logon Script
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить право Write на скрипты входа (Logon/Logoff/Startup) у непривилегированных УЗ. Скрипты исполняются на каждом logon — подмена скрипта даёт RCE на всех пользователях / компьютерах в области действия.
+    count_label: logon script с делегированной записью
+  P-DisplaySpecifier:
+    title: Display Specifiers содержат опасные атрибуты
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Аудитировать displaySpecifier-объекты на ссылки к произвольным CLSID / DLL. Опасные display specifiers могут быть использованы для RCE через ADUC.
+    count_label: опасных display specifiers
+  P-DsHeuristicsAdminSDExMask:
+    title: dsHeuristics исключает группы из защиты AdminSDHolder (Privileged)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Сбросить бит позиции 16 в dsHeuristics. Включённый бит исключает некоторые привилегированные группы из защиты AdminSDHolder, оставляя их ACL модифицируемыми.
+    count_label: (AdminSDHolder ослаблен через dsHeuristics)
+  P-DsHeuristicsDoListObject:
+    title: dsHeuristics включает List Object mode (Privileged)
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Сбросить fDoListObject в dsHeuristics. List Object mode меняет интерпретацию прав чтения объектов AD.
+    count_label: '(dsHeuristics: ListObject)'
+  P-ExchangeAdminSDHolder:
+    title: Exchange имеет права AdminSDHolder
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить Exchange-группы из ACL AdminSDHolder. Group Exchange Trusted Subsystem с правами на AdminSDHolder = возможность повышения через Exchange (классическая PrivExchange).
+    count_label: избыточных прав Exchange
+  P-ExchangePrivEsc:
+    title: Exchange имеет избыточные права над AD (CVE-2019-0686 / Privilege Escalation)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Применить Microsoft Active Directory Split Permissions Model или ноябрьский security update 2019 года. Группы Exchange (Exchange Trusted Subsystem, Exchange Windows Permissions) имели права WriteDACL на корень домена — это позволяло атакующему с правами обычного Mailbox-пользователя получить DA через PrivExchange.
+    count_label: избыточных прав Exchange
+  P-Inactive:
+    title: Привилегированная учётная запись неактивна более 6 месяцев
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Отключить или удалить привилегированные учётные записи, не использовавшиеся более 6 месяцев. Активные неиспользуемые tier-0 УЗ — типичная мишень credential stuffing и password spraying; их компрометация даёт мгновенный доступ к домену.
+    count_label: неактивных привилегированных УЗ
+  P-Kerberoasting:
+    title: Привилегированные УЗ уязвимы к Kerberoasting
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Для tier-0 УЗ с SPN: либо удалить SPN, либо перевести на gMSA (Group Managed Service Account), либо установить пароль длиной 25+ случайных символов. Брутфорс TGS-REP даёт пароль администратора.'
+    count_label: привилегированных kerberoastable УЗ
+  P-LoginDCEveryone:
+    title: Право Logon на DC у Everyone / Authenticated Users
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить ACE «Allow log on locally» / «Allow log on through Remote Desktop Services» на DC у всех групп, кроме Tier-0. Locally logon на DC = lsass + DCSync.
+    count_label: DC с публичным logon
+  P-LogonDenied:
+    title: Не настроена политика Deny Logon для tier-0 УЗ
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Настроить GPO «Deny log on locally» / «Deny log on through Remote Desktop Services» для tier-0 УЗ на всех не-DC хостах. Это блокирует pass-the-hash движение admin-credential на workstation.
+    count_label: (нет Deny Logon политики)
+  P-OperatorsEmpty:
+    title: Группа Account/Server Operators не пуста
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Очистить группы Account Operators / Server Operators / Backup Operators / Print Operators. Эти группы имеют избыточные привилегии и не должны использоваться в современных доменах (legacy NT4).
+    count_label: привилегированных Operators
+  P-PrivilegeEveryone:
+    title: Привилегированные права назначены группе Everyone
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить Everyone / Authenticated Users из всех привилегированных групп и user-rights assignments (SeDebugPrivilege, SeBackupPrivilege, и т.д.).
+    count_label: привилегий у Everyone
+  P-RODCAdminRevealed:
+    title: На RODC раскрыты пароли привилегированных УЗ
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить привилегированные УЗ из msDS-RevealedList на RODC. Привилегированные пароли не должны кэшироваться на RODC (он часто в небезопасной зоне).
+    count_label: привилегированных УЗ на RODC
+  P-RODCAllowedGroup:
+    title: У RODC некорректный msDS-RevealOnDemandGroup
+    type: Недостаток
+    segment: Серверный
+    recommendation: Включить в msDS-RevealOnDemandGroup только не-привилегированные группы (UB-сегмента). Привилегированные не должны кэшироваться на RODC.
+    count_label: RODC с уязвимой группой
+  P-RODCDeniedGroup:
+    title: У RODC некорректно настроен msDS-NeverRevealGroup
+    type: Недостаток
+    segment: Серверный
+    recommendation: 'Включить в msDS-NeverRevealGroup на RODC: Domain Admins, Enterprise Admins, Schema Admins, KRBTGT, привилегированные группы.'
+    count_label: RODC без NeverReveal
+  P-RODCKrbtgtOrphan:
+    title: RODC KRBTGT учётная запись осиротевшая
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить осиротевшие учётные записи krbtgt_NNNN для несуществующих RODC. Эти УЗ остаются после некорректного удаления RODC и могут быть использованы для создания Silver Ticket.
+    count_label: orphan KRBTGT для RODC
+  P-RODCNeverReveal:
+    title: У RODC список Never Reveal пустой / неполный
+    type: Недостаток
+    segment: Серверный
+    recommendation: Заполнить msDS-NeverRevealGroup на каждом RODC привилегированными группами домена.
+    count_label: RODC с пустым NeverReveal
+  P-RODCRevealOnDemand:
+    title: У RODC слишком широкий msDS-RevealOnDemandGroup
+    type: Недостаток
+    segment: Серверный
+    recommendation: Ограничить RevealOnDemand group на RODC — только пользователи филиала, не привилегированные.
+    count_label: RODC с broad RevealOnDemand
+  P-RODCSYSVOLWrite:
+    title: У RODC есть права записи в SYSVOL
+    type: Уязвимость
+    segment: Серверный
+    recommendation: RODC должен иметь только read-only доступ к SYSVOL. Запись на RODC = возможность подмены GPO с распространением на основной DC через DFSR.
+    count_label: RODC с записью в SYSVOL
+  P-RecoveryModeUnprotected:
+    title: Пароль Directory Services Restore Mode (DSRM) не защищён
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Включить синхронизацию DSRM-пароля с доменной УЗ (DsrmAdminLogonBehavior = 0) и регулярно её ротировать. DSRM — локальный admin-пароль DC, используется для восстановления AD. Если он скомпрометирован, атакующий может загрузить DC в Directory Services Restore Mode и манипулировать ntds.dit.
+    count_label: DC с незащищённым DSRM
+  P-RecycleBin:
+    title: AD Recycle Bin не включён
+    type: Недостаток
+    segment: Серверный
+    recommendation: Включить AD Recycle Bin (Enable-ADOptionalFeature -Identity "Recycle Bin Feature" -Scope ForestOrConfigurationSet).
+    count_label: (Recycle Bin выключен)
+  P-SchemaAdmin:
+    title: Группа Schema Admins содержит постоянных членов
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Очистить группу Schema Admins. Группа должна заполняться только на время плановых изменений схемы и очищаться после. Schema Admins имеет права модификации схемы леса = compromise через template-attack.
+    count_label: постоянных Schema Admins
+  P-ServiceDomainAdmin:
+    title: Сервисные учётные записи входят в Domain Admins / Enterprise Admins
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить сервисные учётные записи из Domain Admins / Enterprise Admins. Заменить на gMSA (Group Managed Service Accounts) с минимальными правами. Сервисные УЗ с правами DA — главная мишень Kerberoasting (длинный неротируемый пароль + извлечение TGS-REP хеша).
+    count_label: сервисных УЗ в DA
+  P-TrustedCredManAccessPrivilege:
+    title: Назначено право SeTrustedCredManAccessPrivilege непривилегированным
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить SeTrustedCredManAccessPrivilege у непривилегированных. Это право позволяет читать и модифицировать Credential Manager — pivot для credential theft.
+    count_label: УЗ с SeTrustedCredManAccessPrivilege
+  P-UnkownDelegation:
+    title: Обнаружены неизвестные / нештатные делегирования
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Расследовать каждое нештатное делегирование. Любое непрозрачное право Modify Permission / Take Ownership / Write Owner на объекты AD — потенциальный путь повышения привилегий. Использовать AD ACL Scanner / BloodHound.
+    count_label: неизвестных делегирований
+  P-UnprotectedOU:
+    title: OU не защищена от случайного удаления
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Установить флаг «Protect object from accidental deletion» на всех критичных OU. Это добавляет ACE Deny Delete для Everyone.
+    count_label: незащищённых OU
+  S-ADRegistration:
+    title: MachineAccountQuota не ограничивает добавление компьютеров в домен
+    type: Недостаток
+    segment: Серверный
+    recommendation: Установить ms-DS-MachineAccountQuota = 0 на уровне домена и делегировать право добавления компьютеров отдельной группе. Default-значение 10 позволяет любому пользователю создавать computer-объекты и эксплуатировать их для RBCD-атак и shadow credentials.
+    count_label: (MAQ != 0)
+  S-AesNotEnabled:
+    title: Сервисные УЗ не поддерживают AES для Kerberos
+    type: Недостаток
+    segment: Серверный
+    recommendation: Включить поддержку AES в свойствах сервисных УЗ (msDS-SupportedEncryptionTypes ≥ 0x08). Без AES TGS-REP шифруется RC4-HMAC, который тривиально брутфорсится оффлайн (Kerberoasting).
+    count_label: сервисных УЗ без AES
+  S-C-Inactive:
+    title: Неактивные компьютеры в Active Directory
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Отключить или удалить из AD computer-объекты, не подключавшиеся к домену более 180 дней. Неактивные хосты — потенциальный путь для атак (старые ОС без патчей, слабые пароли локального админа, отсутствие современного антивируса). Использовать Search-ADAccount -AccountInactive -TimeSpan 180.00:00:00.
+    count_label: неактивных компьютеров
+  S-C-PrimaryGroup:
+    title: Компьютеры с изменённым атрибутом primaryGroupID
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Восстановить primaryGroupID компьютеров в значение по умолчанию (516 для DC, 521 для RODC, 515 для членов домена). Нестандартное значение часто указывает на попытку скрыть членство в привилегированной группе.
+    count_label: компьютеры со смещённой primaryGroup
+  S-C-Reversible:
+    title: Компьютеры с обратимым шифрованием пароля
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Снять флаг ENCRYPTED_TEXT_PASSWORD_ALLOWED (бит 0x80 в userAccountControl) у затронутых computer-объектов. Пароли компьютеров не должны храниться в обратимом виде.
+    count_label: компьютеры с обратимым шифрованием
+  S-DC-2000:
+    title: Контроллеры домена под управлением Windows 2000
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Срочно вывести из эксплуатации контроллеры домена под управлением Windows 2000 Server. ОС не получает обновлений безопасности с 2010 года. Перенести роли FSMO на современные DC (Windows Server 2019/2022), затем dcpromo /demote на старых.
+
+      Наличие DC на Windows 2000 блокирует повышение functional level и оставляет домен уязвимым к множеству атак (ms-DS-Behavior-Version='0').
+    count_label: DC на Windows 2000
+  S-DC-2003:
+    title: Контроллеры домена под управлением Windows Server 2003
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Срочно мигрировать DC на современные версии (Windows Server 2019/2022). Windows Server 2003 вне поддержки с 2015 года.
+    count_label: DC на Windows Server 2003
+  S-DC-2008:
+    title: Контроллеры домена под управлением Windows Server 2008 / R2
+    type: Недостаток
+    segment: Серверный
+    recommendation: Спланировать миграцию DC на Windows Server 2019/2022. Windows Server 2008/R2 вне расширенной поддержки с 14.01.2020.
+    count_label: DC на Windows Server 2008
+  S-DC-2012:
+    title: Контроллеры домена под управлением Windows Server 2012 / R2
+    type: Недостаток
+    segment: Серверный
+    recommendation: Спланировать миграцию DC на Windows Server 2019/2022. Windows Server 2012/R2 вне расширенной поддержки с 10.10.2023.
+    count_label: DC на Windows Server 2012
+  S-DC-NotUpdated:
+    title: Контроллеры домена не обновлялись длительное время
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Срочно установить кумулятивные обновления безопасности на все DC. Регулярно (ежемесячно) применять Patch Tuesday. DC без свежих патчей уязвимы к коробочным эксплойтам (Zerologon, samAccountName spoofing, и т.д.).
+    count_label: DC без свежих обновлений
+  S-DC-SubnetMissing:
+    title: В Active Directory Sites отсутствуют подсети DC
+    type: Недостаток
+    segment: Серверный
+    recommendation: Добавить IP-подсети контроллеров домена в Active Directory Sites and Services. Отсутствие подсетей приводит к некорректному выбору ближайшего DC клиентами и логированию NETLOGON 5807.
+    count_label: DC без объявленной подсети
+  S-DCRegistration:
+    title: Контроллеры домена в несогласованном состоянии регистрации
+    type: Недостаток
+    segment: Серверный
+    recommendation: 'Проверить userAccountControl у computer-объектов всех DC: должны быть установлены биты SERVER_TRUST_ACCOUNT (0x2000) и TRUSTED_FOR_DELEGATION (0x80000). Несогласованные DC могут указывать на metadata cleanup ошибки или попытку persistence.'
+    count_label: DC в неконсистентном состоянии
+  S-DefenderASR:
+    title: Не настроены правила Defender Attack Surface Reduction (ASR)
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: 'Включить правила ASR через GPO «Microsoft Defender Exploit Guard → Attack Surface Reduction». Минимальный набор: блокировка office child processes, credential stealing from LSASS, executable content from email.'
+    count_label: хосты без ASR
+  S-Duplicate:
+    title: Дублирующиеся объекты в AD (дубликаты SPN / UPN / SID)
+    type: Недостаток
+    segment: Серверный
+    recommendation: Расследовать дубликаты — обычно artefact ошибок миграции. Дублирующиеся SPN могут указывать на попытку перехвата Kerberos-аутентификации.
+    count_label: дубликатов
+  S-FirewallScript:
+    title: Скриптовые движки не ограничены на исходящий трафик
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Создать правила Windows Firewall, блокирующие исходящий трафик для wscript.exe, cscript.exe, mshta.exe. Эти движки — основной путь скачивания payload в bash-кампаниях.
+    count_label: хосты без firewall-правил
+  S-FolderOptions:
+    title: Скриптовые файлы (.js / .vbs / .wsf) открываются скриптовыми движками
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Через GPO перенаправить расширения .js / .vbs / .wsf на Notepad (HKLM\SOFTWARE\Classes). Это блокирует выполнение скриптов из писем и USB-носителей — типичный путь доставки malware.
+    count_label: (.js/.vbs/.wsf по умолчанию исполняются)
+  S-FunctionalLevel1:
+    title: Functional level домена / леса = Windows 2000
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Поднять functional level домена и леса до Windows Server 2016+ (уровень 7). FL2000 блокирует современные функции безопасности (AES-only Kerberos, claims, gMSA, PKINIT Freshness).
+    count_label: (текущий FL = 2000)
+  S-FunctionalLevel3:
+    title: Functional level домена / леса = Windows Server 2008
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Поднять functional level до Windows Server 2016+ (уровень 7). Текущий FL блокирует часть современных функций безопасности (PKINIT Freshness, AES-only Kerberos в полном объёме).
+    count_label: (текущий FL = 2008)
+  S-Inactive:
+    title: Большое количество неактивных пользовательских УЗ
+    type: Недостаток
+    segment: Серверный
+    recommendation: Отключить или удалить УЗ, не использовавшиеся более 6 месяцев. Использовать Search-ADAccount -AccountInactive -TimeSpan 180.00:00:00. Неактивные УЗ — типичная мишень credential stuffing и password spraying.
+    count_label: неактивных УЗ
+  S-JavaSchema:
+    title: В схеме AD присутствуют классы Java RFC 2713
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Установить параметр com.sun.jndi.ldap.object.trustURLCodebase=false на Java-приложениях, использующих JNDI, либо удалить уязвимые атрибуты схемы. Без этого возможна Log4Shell-подобная атака на JNDI lookup из LDAP.
+    count_label: уязвимых классов схемы
+  S-KerberosArmoring:
+    title: Клиенты не поддерживают Kerberos Armoring (FAST)
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Включить GPO «Kerberos client support for claims, compound authentication and Kerberos armoring» (Computer Configuration → Policies → Administrative Templates → System → Kerberos).
+    count_label: (армирование Kerberos не настроено)
+  S-KerberosArmoringDC:
+    title: Контроллеры домена не поддерживают Kerberos Armoring (FAST)
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: Включить GPO «KDC support for claims, compound authentication and Kerberos armoring» = «Always provide claims» или «Fail unarmored authentication requests» на политике Default Domain Controllers Policy.
+    count_label: (армирование Kerberos на DC выключено)
+  S-NoPreAuth:
+    title: Учётные записи с отключённой Kerberos pre-authentication (AS-REP Roasting)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Включить pre-authentication для всех УЗ: снять флаг DONT_REQ_PREAUTH (бит 0x400000 в userAccountControl). Без pre-auth любой пользователь может запросить AS-REP с хешем пароля и брутфорсить его оффлайн (AS-REP Roasting).'
+    count_label: УЗ без pre-auth
+  S-NoPreAuthAdmin:
+    title: Привилегированные УЗ с отключённой Kerberos pre-authentication
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Срочно включить pre-authentication для всех привилегированных УЗ (DONT_REQ_PREAUTH должен быть снят). AS-REP Roasting на админской УЗ может дать пароль администратора домена.
+    count_label: привилегированные УЗ без pre-auth
+  S-OS-2000:
+    title: Использование Windows 2000 на рабочих станциях / серверах
+    type: Уязвимость
+    segment: Пользовательский
+    recommendation: Немедленно вывести из эксплуатации все Windows 2000 системы. ОС не получает обновлений безопасности с 2010 года и уязвима к десяткам критических CVE без патчей.
+    count_label: хостов с Windows 2000
+  S-OS-2003:
+    title: Использование Windows Server 2003 (вне поддержки с 2015 года)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Срочно вывести из эксплуатации или мигрировать серверы Windows Server 2003/2003 R2 на актуальные версии (Windows Server 2019/2022). Расширенная поддержка завершилась 14.07.2015, security-обновления не выпускаются. До миграции изолировать в отдельный VLAN с минимальным сетевым доступом.
+    count_label: серверов Windows Server 2003
+  S-OS-NT:
+    title: Использование Windows NT (вне поддержки с 2004 года)
+    type: Уязвимость
+    segment: Пользовательский
+    recommendation: Немедленно вывести из эксплуатации все системы под управлением Windows NT 4.0. ОС не получает security-обновлений более 20 лет, уязвима практически ко всему — от MS06-040 до MS17-010. Если есть промышленные системы — вынести в полностью изолированный сегмент без сетевого доступа.
+    count_label: хостов с Windows NT
+  S-OS-Vista:
+    title: Использование Windows Vista (вне поддержки с 11.04.2017)
+    type: Уязвимость
+    segment: Пользовательский
+    recommendation: Срочно вывести из эксплуатации хосты Windows Vista. ОС не получает обновлений безопасности более 7 лет, уязвима к множеству неустранённых CVE.
+    count_label: хосты с Windows Vista
+  S-OS-Win8:
+    title: Использование Windows 8 / 8.1 (вне поддержки с 10.01.2023)
+    type: Недостаток
+    segment: Пользовательский
+    recommendation: Вывести из эксплуатации все хосты под управлением Windows 8 / 8.1. ОС не получает обновлений безопасности.
+    count_label: хосты с Windows 8
+  S-OldNtlm:
+    title: Разрешена аутентификация LM / NTLMv1
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Установить «Network security: LAN Manager authentication level» = «Send NTLMv2 response only. Refuse LM & NTLM» (уровень 5) через доменную GPO. LM-хеши тривиально крекаются (rainbow tables), NTLMv1 уязвим к downgrade и relay-атакам. NTLMv2 обязателен; SMB signing / LDAP signing обязательны.'
+    count_label: хостов с разрешённым NTLMv1/LM
+  S-PrimaryGroup:
+    title: Пользователи с изменённым атрибутом primaryGroupID
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Восстановить primaryGroupID пользователей в значение по умолчанию (513 = Domain Users, 514 = Domain Guests). Установка primaryGroupID = 512 (Domain Admins) — известный приём persistence (членство не отображается в Members группы).
+    count_label: УЗ со смещённой primaryGroup
+  S-PwdLastSet-45:
+    title: Машинные пароли компьютеров не меняются (45 дней)
+    type: Недостаток
+    segment: Серверный
+    recommendation: 'Проверить параметры DisablePasswordChange=0 и MaximumPasswordAge=30 в GPO «Domain member: Disable machine account password changes» — должны быть отключены.'
+    count_label: компьютеры без ротации пароля
+  S-PwdLastSet-Cluster:
+    title: Пароль кластерной УЗ не ротируется
+    type: Недостаток
+    segment: Серверный
+    recommendation: Включить регулярную ротацию секретов кластерных УЗ. Проверить конфигурацию failover-кластера и event logs на ошибки смены пароля.
+    count_label: кластерные УЗ без ротации
+  S-PwdLastSet-DC:
+    title: Пароль учётной записи DC не менялся длительное время
+    type: Недостаток
+    segment: Серверный
+    recommendation: Проверить параметр DisablePasswordChange=0 и MaximumPasswordAge=30 в реестре DC. Машинный пароль DC должен ротироваться автоматически каждые 30 дней.
+    count_label: DC с непротированным паролем
+  S-PwdNotRequired:
+    title: Учётные записи с флагом PASSWD_NOTREQD
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Снять флаг PASSWD_NOTREQD (бит 0x00000020 в userAccountControl) со всех УЗ. Аккаунты без требования пароля могут иметь пустой пароль — мгновенный logon без credential. Команда:
+        Get-ADUser -Filter 'UserAccountControl -band 0x20' | Set-ADUser -PasswordNotRequired $false
+    count_label: УЗ с PASSWD_NOTREQD
+  S-Reversible:
+    title: Пользователи с обратимым шифрованием пароля
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Снять флаг «Store password using reversible encryption» (UAC бит 0x80) у всех пользователей. При следующей смене пароля Windows перестанет хранить его в обратимом виде. Восстанавливается до plaintext через DCSync.
+    count_label: УЗ с обратимым шифрованием
+  S-SIDHistory:
+    title: Учётные записи имеют SIDHistory после миграции
+    type: Недостаток
+    segment: Серверный
+    recommendation: Очистить атрибут sIDHistory после завершения миграции между доменами/лесами. Использовать команду dsmod с параметром -sid или PowerShell скрипт Remove-SIDHistory. Не очищенный SIDHistory — типичный путь повышения привилегий в межлесных трастах.
+    count_label: УЗ с SIDHistory
+  S-SMB-v1:
+    title: На контроллерах домена включён SMBv1
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Отключить SMBv1 на всех DC и серверах:
+        Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol
+
+      SMBv1 уязвим к EternalBlue (MS17-010), не поддерживает signing/encryption, является точкой входа для ransomware (WannaCry, NotPetya). На современных Windows SMBv1 не нужен (поддержка только для древних NAS/принтеров).
+    count_label: DC с SMBv1
+  S-TerminalServicesGPO:
+    title: Не настроены параметры Terminal Services (RDP) в GPO
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: 'Установить через GPO: таймаут отключения сессии 2 часа, таймаут idle 8 часов, отключить перенаправление принтеров (если не требуется). Конфигурация: Computer Configuration → Administrative Templates → Windows Components → Remote Desktop Services.'
+    count_label: GPO без настроек RDP
+  S-Vuln-MS14-068:
+    title: Контроллеры домена уязвимы к MS14-068 (Kerberos PAC)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Срочно установить обновление безопасности MS14-068 (KB3011780) на все контроллеры домена. Без патча любой аутентифицированный пользователь может подделать PAC и получить права администратора домена.
+
+      До установки патча — изолировать DC, мониторить event 4769 с подозрительными ticket options. Проверить наличие индикаторов компрометации (Mimikatz Kerberos::pac).
+    count_label: уязвимых контроллеров домена
+  S-Vuln-MS17_010:
+    title: Системы уязвимы к MS17-010 (EternalBlue / SMBv1 RCE)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Срочно установить обновление безопасности MS17-010 (KB4013389 и связанные) на все затронутые хосты. Уязвимость в SMBv1 позволяет удалённое выполнение кода без аутентификации (EternalBlue) — лежала в основе WannaCry / NotPetya.
+
+      Дополнительно: полностью отключить SMBv1 (Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol). На современных Windows SMBv1 не требуется.
+    count_label: уязвимых хостов
+  S-WSUS-NoPinning:
+    title: WSUS не использует certificate pinning
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Включить certificate pinning на WSUS-клиентах. Без pinning MITM возможен через подменённый CA-сертификат.
+    count_label: WSUS без pinning
+  S-WSUS-UserProxy:
+    title: WSUS использует user-proxy (CVE-2020-1013)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Установить UseWUServer=1 и SetProxyBehaviorForUpdateDetection=1 в политике WSUS. CVE-2020-1013 позволяет проксировать WSUS через локальный proxy и подменить обновления.
+    count_label: хостов с WSUS user-proxy
+  T-AlgsAES:
+    title: Trust не использует AES для Kerberos
+    type: Возможно недостаток
+    segment: Серверный
+    recommendation: 'Включить AES на трасте: ksetup /setenctypeattr <trust> AES128-CTS-HMAC-SHA1-96 AES256-CTS-HMAC-SHA1-96. Без AES траст использует RC4-HMAC — уязвимо к Kerberoasting.'
+    count_label: трастов без AES
+  T-AzureADSSO:
+    title: Пароль учётной записи AZUREADSSOACC не ротировался более года
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Произвести ротацию пароля УЗ AZUREADSSOACC через Update-AzureAdSsoForestSyncPwd. Компрометация хеша этой УЗ позволяет создавать Silver Ticket для облачных сервисов (Azure AD Seamless SSO bypass).
+    count_label: (AZUREADSSOACC не ротирован)
+  T-Downlevel:
+    title: Доверительные отношения с устаревшим уровнем функциональности
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Поднять functional level леса-партнёра либо пересоздать траст после миграции на современный FL. Downlevel-трасты блокируют SID filtering и selective authentication.
+    count_label: downlevel-трастов
+  T-FileDeployedOutOfDomain:
+    title: GPO деплоит файлы с внешнего траста (за пределами домена)
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить ссылки на внешние UNC-пути из GPO (Software Installation, Logon Scripts, Files, Folders). Если внешний домен скомпрометирован, атакующий получает RCE на всех хостах в области действия GPO.
+    count_label: GPO с внешними файлами
+  T-Inactive:
+    title: Неактивные доверительные отношения с другими доменами
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Проверить актуальность доверительных отношений — пароль траста не менялся более года. Если траст не используется, удалить его. Если используется — принудительно сменить пароль (netdom trust /resetonerror).
+    count_label: неактивных трастов
+  T-SIDFiltering:
+    title: На исходящем доверии отключена фильтрация SID History
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Включить SID Filtering на исходящих доверительных отношениях леса:
+        netdom trust <trusted_domain> /domain:<our_domain> /quarantine:yes
+
+      Без фильтрации атакующий в доверенном лесу может добавить SID администраторов нашего леса в SID History своей УЗ и получить домен-админ привилегии у нас (классическая SID History injection).
+    count_label: доверий без фильтрации SID
+  T-SIDHistoryDangerous:
+    title: УЗ имеют опасный SIDHistory из других доменов
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Расследовать УЗ с SIDHistory, содержащим SID привилегированных групп. Очистить sIDHistory у легитимных УЗ через ADSI Edit. Включить аудит модификаций SIDHistory (event 4765).
+    count_label: УЗ с опасным SIDHistory
+  T-SIDHistorySameDomain:
+    title: Учётные записи имеют SIDHistory из того же домена
+    type: Уязвимость
+    segment: Серверный
+    recommendation: |-
+      Расследовать УЗ с SIDHistory того же домена — это нештатное состояние, характерное для атаки SID History injection (Mimikatz dcshadow, Impacket).
+
+      Очистить атрибут sIDHistory у легитимных УЗ через ADSI Edit или Set-ADUser -Remove. Включить аудит изменений SIDHistory (Event 4765/4766).
+    count_label: УЗ с подозрительным SIDHistory
+  T-SIDHistoryUnknownDomain:
+    title: УЗ имеют SIDHistory от неизвестных доменов
+    type: Недостаток
+    segment: Серверный
+    recommendation: Расследовать SID-домены, отсутствующие в текущей конфигурации трастов. SIDHistory из неизвестных доменов = возможный artefact атаки SID History injection или некорректной миграции.
+    count_label: УЗ с неизвестным SIDHistory
+  T-ScriptOutOfDomain:
+    title: Logon-скрипты ссылаются на внешние UNC-пути
+    type: Уязвимость
+    segment: Серверный
+    recommendation: Удалить из login-скриптов ссылки на ресурсы вне нашего домена. Внешний UNC = доверие к чужой инфраструктуре, компрометация которой даёт RCE на наших клиентах.
+    count_label: скриптов с внешними путями
+  T-TGTDelegation:
+    title: Входящие доверия с разрешённой TGT-delegation
+    type: Уязвимость
+    segment: Серверный
+    recommendation: 'Отключить TGT delegation на входящих трастах: установить EnableTGTDelegation = false (netdom trust /enabletgtdelegation:no). С TGT delegation доверенный лес может извлекать TGT наших администраторов через unconstrained delegation.'
+    count_label: трастов с TGT delegation
+synthetic_findings:
+- id: PH-KRBTGT-Stale
+  title: Пароль учётной записи krbtgt не менялся длительное время
+  type: Недостаток
+  segment: Серверный
+  recommendation: |
+    Произвести двукратную смену пароля учётной записи krbtgt с интервалом
+    более 10 часов (скрипт Microsoft Reset-KrbTgt-Password.ps1). Регулярная
+    ротация (раз в 6 месяцев) лишает атакующего возможности использовать
+    ранее скомпрометированный Golden Ticket.
+  triggers_on: plumhound:KRBTGT_Stale_Password
+  plumhound:
+  - file: KRBTGT_Stale_Password
+    cols:
+    - Username
+    - PasswordLastSet
+- id: PH-ADCS-ESC1
+  title: 'ADCS: шаблон сертификата уязвим к ESC1 (EnrolleeSuppliesSubject)'
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |
+    На уязвимых шаблонах сертификатов снять флаг «Supply in the request» для
+    Subject Name (msPKI-Certificate-Name-Flag должен иметь бит ENROLLEE_SUPPLIES_SUBJECT
+    выключенным). Альтернатива — ограничить право Enroll только tier-0 группами.
+    ESC1 позволяет любому пользователю с правом Enroll получить сертификат на
+    имя любого пользователя домена, включая администратора.
+  triggers_on: plumhound:ADCS_ESC1_Enrollers
+  plumhound:
+  - file: ADCS_ESC1_Enrollers
+    cols: []
+- id: PH-ADCS-ESC2
+  title: 'ADCS: шаблон сертификата уязвим к ESC2 (Any Purpose / SubCA EKU)'
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |
+    На уязвимых шаблонах удалить EKU «Any Purpose» (2.5.29.37.0) или
+    «Subordinate Certification Authority». Эти EKU позволяют использовать
+    выданный сертификат для аутентификации в качестве любого пользователя.
+  triggers_on: plumhound:ADCS_ESC2_Enrollers
+  plumhound:
+  - file: ADCS_ESC2_Enrollers
+    cols: []
+- id: PH-ADCS-ESC3
+  title: 'ADCS: шаблон сертификата уязвим к ESC3 (Enrollment Agent)'
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |
+    Удалить EKU «Certificate Request Agent» с шаблонов, доступных рядовым
+    пользователям, либо ограничить список enrollment agents и subjects, для
+    которых они могут оформлять запросы.
+  triggers_on: plumhound:ADCS_ESC3_Enrollers
+  plumhound:
+  - file: ADCS_ESC3_Enrollers
+    cols: []
+- id: PH-ADCS-ESC6
+  title: 'ADCS: на CA включён флаг EDITF_ATTRIBUTESUBJECTALTNAME2 (ESC6)'
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |
+    Отключить флаг EDITF_ATTRIBUTESUBJECTALTNAME2 на CA командой:
+    certutil -setreg policy\\EditFlags -EDITF_ATTRIBUTESUBJECTALTNAME2 ; net stop certsvc; net start certsvc.
+    С этим флагом любой пользователь может указать произвольный SAN в запросе
+    сертификата и получить токен другого пользователя.
+  triggers_on: plumhound:ADCS_ESC6_Enrollers
+- id: PH-ADCS-ESC8
+  title: 'ADCS: на CA включён Web Enrollment по HTTP (ESC8, NTLM Relay → AD CS)'
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |
+    Отключить HTTP-эндпоинты Web Enrollment / Certificate Enrollment Web Service
+    или включить EPA (Extended Protection for Authentication) + LDAP signing.
+    ESC8 позволяет через NTLM relay получить сертификат компьютера-DC и
+    затем — KRBTGT.
+  triggers_on: plumhound:ADCS_ESC8_CAs
+  plumhound:
+  - file: ADCS_ESC8_CAs
+    cols: []
+- id: PH-Kerberoastable
+  title: Учётные записи с SPN уязвимы к Kerberoasting
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |
+    Для всех УЗ со SPN установить длинный (25+ символов) случайный пароль либо
+    перевести на gMSA. Хеш TGS-REP можно запросить и брутфорсить оффлайн.
+    Особенно критично для УЗ с правами администратора.
+  triggers_on: plumhound:Kerberoastable_Users
+  plumhound:
+  - file: Kerberoastable_Users
+    cols:
+    - Username
+    - DisplayName
+    - Enabled
+    - AdminCount
+    - SPNs
+- id: PH-Kerberoastable-Admin
+  title: Привилегированные УЗ со SPN (критичный Kerberoasting target)
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |
+    Срочно сменить пароль на длинный случайный или перевести УЗ на gMSA.
+    Брутфорс TGS-REP такой УЗ ведёт к получению прав администратора домена.
+  triggers_on: plumhound:Kerberoastable_Admins
+  plumhound:
+  - file: Kerberoastable_Admins
+    cols: []
+- id: PH-PasswordInDescription
+  title: Пароль обнаружен в атрибуте Description УЗ или компьютера
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |
+    Удалить пароли из поля Description и других открытых атрибутов AD.
+    Атрибут Description читается анонимно/любым пользователем домена.
+  triggers_on: plumhound:ComputersWithPassInDescription
+  plumhound:
+  - file: ComputersWithPassInDescription
+    cols: []
+- id: PH-AdminsWithoutSensitiveFlag
+  title: Привилегированные УЗ без флага «Account is sensitive and cannot be delegated»
+  type: Недостаток
+  segment: Серверный
+  recommendation: |
+    Установить флаг «Account is sensitive and cannot be delegated» для всех
+    tier-0 учётных записей либо добавить их в группу Protected Users.
+  triggers_on: plumhound:AdminsWithoutSensitiveFlag
+  plumhound:
+  - file: AdminsWithoutSensitiveFlag
+    cols:
+    - User
+    - DisplayName
+    - Tier0Groups
+    - Enabled
+- id: PH-DomainTrusts-Abuse
+  title: Доменные доверительные отношения с потенциалом злоупотребления
+  type: Возможно недостаток
+  segment: Серверный
+  recommendation: |
+    Проверить транзитивные и двусторонние доверительные отношения. При
+    возможности перевести на selective authentication и включить SID filtering.
+    Уязвимые трасты позволяют атаковать корень леса через дочерний домен.
+  triggers_on: plumhound:DomainTrusts_Abuse
+- id: PH-MSSQL
+  title: Серверы MSSQL обнаружены в Active Directory
+  type: Возможно недостаток
+  segment: Серверный
+  recommendation: |
+    Проверить конфигурацию обнаруженных MSSQL-серверов: отключить xp_cmdshell,
+    убедиться в отсутствии sa с дефолтным паролем, ограничить TCP/1433 на
+    межсегментных МЭ. SQL Server — частый pivot для lateral movement.
+  triggers_on: plumhound:Computers_MSSQL
+  plumhound:
+  - file: Computers_MSSQL
+    cols:
+    - Computer
+    - Enabled
+    - SPN
+- id: PH-Users-NotActive-12mo
+  title: Учётные записи пользователей неактивны более 12 месяцев
+  type: Недостаток
+  segment: Серверный
+  recommendation: |
+    Отключить или удалить учётные записи, не использовавшиеся более 12 месяцев.
+    Активные неиспользуемые УЗ — типичная точка входа для credential stuffing.
+  triggers_on: plumhound:UsersNotActive12mo
+  plumhound:
+  - file: UsersNotActive12mo
+    cols:
+    - Username
+    - DisplayName
+    - Enabled
+    - LastLogonTimeStamp
+- id: PH-DCSync-NonPriv
+  title: Непривилегированные субъекты имеют права DCSync на домен / DC
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Срочно проверить ACL домена и computer-объектов контроллеров домена. Удалить права DS-Replication-Get-Changes / DS-Replication-Get-Changes-All / AllExtendedRights у всех субъектов, не входящих в Domain Admins / Enterprise Admins / Administrators.
+
+    DCSync права дают возможность извлечь хеши KRBTGT и любых УЗ из домена через mimikatz lsadump::dcsync — это прямой путь к Golden Ticket и полной компрометации домена.
+  triggers_on: plumhound:Non-Privileged_DCSync-Domain_DCs
+  plumhound:
+  - file: Non-Privileged_DCSync-Domain_DCs
+    cols:
+    - Principal
+    - Type
+    - Enabled
+    - Rights
+    - Target
+    - Target_Type
+- id: PH-FullControl-NonPriv
+  title: Непривилегированные имеют FullControl / опасные ACE на объекты AD
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Аудитировать ACL объектов и удалить избыточные ACE (GenericAll, GenericWrite, WriteDacl, WriteOwner, Owns, AllExtendedRights, AdminTo) у непривилегированных субъектов на критичных объектах AD.
+
+    FullControl-эквивалентные права позволяют тривиальное повышение привилегий: выдать себе нужные права через WriteDacl, сделать takeover УЗ через ResetPassword, и т.д. (BloodHound покажет конкретные attack paths).
+  triggers_on: plumhound:Non-Privileged_DangerousRights-FullControl
+  plumhound:
+  - file: Non-Privileged_DangerousRights-FullControl
+    cols:
+    - Principal
+    - Object_Type
+    - Enabled
+    - Rights
+    - Targets
+- id: PH-GroupMgmt-NonPriv
+  title: Непривилегированные могут добавлять членов в группы (AddMember / AddSelf)
+  type: Уязвимость
+  segment: Серверный
+  recommendation: Удалить ACE AddMember / AddSelf у непривилегированных субъектов на группы AD. AddSelf позволяет атакующему добавить свою УЗ в любую группу (включая Domain Admins, если на ней есть AddSelf для широкой аудитории — критичная мисконфигурация).
+  triggers_on: plumhound:Non-Privileged_DangerousRights-GroupManagement
+  plumhound:
+  - file: Non-Privileged_DangerousRights-GroupManagement
+    cols:
+    - Principal
+    - Object_Type
+    - Enabled
+    - Rights
+    - Targets
+- id: PH-UserTakeover-NonPriv
+  title: Непривилегированные могут захватить УЗ (ForceChangePassword / WriteSPN / Shadow Credentials)
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Удалить ACE ForceChangePassword / WriteSPN / AddKeyCredentialLink / WriteAccountRestrictions у непривилегированных субъектов на UZS.
+
+    ForceChangePassword = смена пароля жертвы без знания текущего. WriteSPN = Kerberoasting на жертве. AddKeyCredentialLink = Shadow Credentials (PKINIT certificate impersonation). Каждый из этих ACE — путь к полному захвату учётной записи.
+  triggers_on: plumhound:Non-Privileged_DangerousRights-UserTakeover
+  plumhound:
+  - file: Non-Privileged_DangerousRights-UserTakeover
+    cols:
+    - Principal
+    - Object_Type
+    - Enabled
+    - Rights
+    - Targets
+- id: PH-RemoteAccess-NonPriv
+  title: Непривилегированные имеют RDP / PSRemote / DCOM на критичные хосты
+  type: Уязвимость
+  segment: Серверный
+  recommendation: Удалить непривилегированных из локальных групп Remote Desktop Users, Remote Management Users, Distributed COM Users на критичных серверах. RDP/WinRM/DCOM-доступ непривилегированных = быстрый lateral movement через дамп lsass / token impersonation после получения сессии.
+  triggers_on: plumhound:Non-Privileged_DangerousRights-RemoteAccess
+  plumhound:
+  - file: Non-Privileged_DangerousRights-RemoteAccess
+    cols:
+    - Principal
+    - Object_Type
+    - Enabled
+    - Rights
+    - Targets
+- id: PH-PassivePaths-NonPriv
+  title: Непривилегированные имеют пассивные пути доступа (HasSession / ReadLAPS / ReadGMSA)
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Сузить ACL на чтение msMcsAdmPwd (LAPS) и msDS-ManagedPassword (gMSA) — только tier-0/назначенные группы. Отслеживать сессии админских УЗ на не-tier-0 хостах (HasSession в BloodHound) и устранять кросс-тиер логоны.
+
+    ReadLAPSPassword = прямой доступ к паролю локального админа всех хостов в области. HasSession админа на workstation = возможность извлечь его токен или хеш.
+  triggers_on: plumhound:Non-Privileged_PassiveAccessPaths
+  plumhound:
+  - file: Non-Privileged_PassiveAccessPaths
+    cols:
+    - Principal
+    - Object_Type
+    - Enabled
+    - Rights
+    - Targets
+- id: PH-Unpriv-Groups-DangerRights
+  title: Псевдогруппы (Everyone / Auth Users / Domain Users) имеют опасные права
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Удалить ACE для Everyone / Authenticated Users / Domain Users / Users / Guests / Pre-Windows 2000 Compatible Access / Anonymous Logon с критичных объектов AD (Owns, GenericAll, WriteDacl, WriteOwner, GoldenCert, ADCS-ESC paths и пр.).
+
+    Любое опасное право у псевдогруппы = повышение привилегий для каждого пользователя домена.
+  triggers_on: plumhound:Unpriv_Groups_DangerousRights
+  plumhound:
+  - file: Unpriv_Groups_DangerousRights
+    cols:
+    - GroupName
+    - Rights
+    - Target
+    - TargetType
+- id: PH-ADCS-ESC9
+  title: 'ADCS: шаблоны без Security Extension (ESC9)'
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Включить флаг CT_FLAG_NO_SECURITY_EXTENSION = false на затронутых шаблонах (установить msPKI-Enrollment-Flag без бита 0x80000). Либо включить EPA на endpoint.
+
+    ESC9 позволяет получить сертификат, не содержащий szOID_NTDS_CA_SECURITY_EXT, и использовать его для аутентификации после смены UPN жертвы (UPN substitution attack).
+  triggers_on: plumhound:ADCS_ESC9_Enrollers
+  plumhound:
+  - file: ADCS_ESC9_Enrollers
+    cols:
+    - TemplateName
+    - Enroller
+    - EnrollerType
+    - Right
+- id: PH-ADCS-ESC14
+  title: 'ADCS: шаблоны с Issuance Policy → OID Group Link (ESC14)'
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Аудитировать связки IssuancePolicy ↔ Group через msDS-OIDToGroupLink. Удалить связки, ведущие к привилегированным группам.
+
+    ESC14 позволяет получить сертификат с issuance policy OID, который автоматически добавляет аутентифицируемого в связанную группу — путь к Domain Admins.
+  triggers_on: plumhound:ADCS_ESC14_Enrollers
+  plumhound:
+  - file: ADCS_ESC14_Enrollers
+    cols:
+    - TemplateName
+    - Enroller
+    - EnrollerType
+    - Right
+- id: PH-ADCS-ESC15
+  title: 'ADCS: шаблоны Schema V1 с EnrolleeSuppliesSubject (ESC15 / EKUwu)'
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Обновить schemaVersion затронутых шаблонов до v2+ и снять ENROLLEE_SUPPLIES_SUBJECT. Установить msPKI-Certificate-Application-Policy явным список EKU, не оставляя пустой.
+
+    ESC15 (EKUwu, CVE-2024-49019) позволяет в шаблоне v1 указать произвольные EKU при запросе и Application Policies — путь к подделке Client Authentication сертификата для любого UPN.
+  triggers_on: plumhound:ADCS_ESC15_Enrollers
+  plumhound:
+  - file: ADCS_ESC15_Enrollers
+    cols:
+    - TemplateName
+    - Enroller
+    - EnrollerType
+    - Right
+- id: PH-ADCS-WeakCertMapping
+  title: Контроллеры домена с ослабленным Certificate Mapping (KB5014754)
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Установить раздел реестра CertificateMappingMethods на DC в значение, не содержащее weak-методы (0x4, 0x8, 0x10): только SKI/SHA1-public-key/explicit OID strong mapping. Применить полный режим KB5014754.
+
+    Weak mapping позволяет подделать аутентификацию сертификатом без szOID_NTDS_CA_SECURITY_EXT на УЗ с тем же UPN — путь к ESC9-подобной атаке.
+  triggers_on: plumhound:ADCS_WeakCertMapping_DCs
+  plumhound:
+  - file: ADCS_WeakCertMapping_DCs
+    cols:
+    - DCName
+    - MappingMethod
+- id: PH-ADCS-WeakBinding
+  title: Контроллеры домена с ослабленным Strong Cert Binding Enforcement
+  type: Уязвимость
+  segment: Серверный
+  recommendation: Установить StrongCertificateBindingEnforcement = 2 (Full Enforcement Mode) согласно KB5014754. Текущее значение 0/1 (Disabled/Compatibility) позволяет аутентификацию сертификатами без security extension — путь к ESC9/ESC14 атакам.
+  triggers_on: plumhound:ADCS_WeakBinding_DCs
+  plumhound:
+  - file: ADCS_WeakBinding_DCs
+    cols:
+    - DCName
+    - BindingSetting
+- id: PH-ADCS-All-ESC
+  title: 'ADCS: сводный отчёт путей атак ESC (BloodHound beta)'
+  type: Уязвимость
+  segment: Серверный
+  recommendation: Проработать каждый attack path из BloodHound ADCS-ESC анализа. См. конкретные находки ESC1/ESC3/ESC4/ESC6/ESC9/ESC10/ESC13 в соответствующих строках отчёта.
+  triggers_on: plumhound:ADCS_All_ESC
+  plumhound:
+  - file: ADCS_All_ESC
+    cols:
+    - Attacker
+    - AttackerType
+    - Target
+    - TargetType
+    - ESCPath
+- id: PH-ConstrainedDelegation-All
+  title: Объекты с Constrained Delegation (msDS-AllowedToDelegateTo)
+  type: Возможно недостаток
+  segment: Серверный
+  recommendation: 'Аудитировать все объекты с msDS-AllowedToDelegateTo. Constrained delegation сам по себе допустим, но с protocol transition (TRUSTED_TO_AUTH_FOR_DELEGATION) даёт эскалацию: атакующий запрашивает TGS от имени любого пользователя на нужный сервис. Цели делегирования (TargetSPN) не должны включать сервисы DC / tier-0 хостов.'
+  triggers_on: plumhound:ConstrainedDelegation-All
+  plumhound:
+  - file: ConstrainedDelegation-All
+    cols:
+    - Object
+    - Enabled
+    - ObjectType
+    - Target_to_Delegate
+    - TargetType
+    - SPNs
+- id: PH-ConstrainedDelegation-Computers
+  title: Компьютеры (не-DC) с Constrained Delegation
+  type: Возможно недостаток
+  segment: Серверный
+  recommendation: Проверить необходимость constrained delegation на каждом компьютере. Удалить делегирования, нацеленные на сервисы DC. Включить «Account is sensitive and cannot be delegated» на УЗ tier-0.
+  triggers_on: plumhound:ConstrainedDelegation-ComputersNonDC
+  plumhound:
+  - file: ConstrainedDelegation-ComputersNonDC
+    cols:
+    - Computer
+    - Enabled
+    - Description
+    - OS
+    - TargetComputer
+    - TargetSPN
+- id: PH-ConstrainedDelegation-Users
+  title: Пользователи с Constrained Delegation
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Удалить msDS-AllowedToDelegateTo с пользовательских УЗ. Constrained delegation на user-объекте редко необходим — обычно artefact legacy или ошибки.
+
+    Компрометация такой УЗ даёт TGS любого пользователя на указанный SPN.
+  triggers_on: plumhound:ConstrainedDelegation-Users
+  plumhound:
+  - file: ConstrainedDelegation-Users
+    cols:
+    - User
+    - Enabled
+    - admincount
+    - TargetComputer
+    - SPNs
+- id: PH-PasswordNotRequired
+  title: Учётные записи с флагом PASSWD_NOTREQD
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Снять флаг PASSWD_NOTREQD (бит 0x20 в userAccountControl) у всех УЗ. Команда: Get-ADUser -Filter "UserAccountControl -band 0x20" | Set-ADUser -PasswordNotRequired $false.
+
+    УЗ с PASSWD_NOTREQD могут иметь пустой пароль — мгновенный logon без credential.
+  triggers_on: plumhound:Users_PasswordNotRequired
+  plumhound:
+  - file: Users_PasswordNotRequired
+    cols:
+    - Name
+    - DisplayName
+    - Enabled
+    - AdminCount
+    - PWDLastSet
+- id: PH-PasswordNotRequiredNeverSet
+  title: УЗ с PASSWD_NOTREQD И паролем, никогда не установленным
+  type: Уязвимость
+  segment: Серверный
+  recommendation: 'Срочно: эти УЗ имеют пустой пароль и могут быть использованы для входа в домен. Снять PASSWD_NOTREQD и принудительно установить надёжный пароль (или отключить УЗ).'
+  triggers_on: plumhound:Users_PasswordNotRequiredNeverSet
+  plumhound:
+  - file: Users_PasswordNotRequiredNeverSet
+    cols:
+    - Name
+    - DisplayName
+    - Enabled
+    - AdminCount
+    - PWDLastSet
+- id: PH-Users-NoKerbReq
+  title: УЗ с отключённой Kerberos pre-auth (AS-REP Roasting)
+  type: Уязвимость
+  segment: Серверный
+  recommendation: 'Включить pre-authentication для всех УЗ: снять DONT_REQ_PREAUTH (бит 0x400000 в UAC). Без pre-auth любой пользователь может запросить AS-REP с хешем пароля жертвы и брутфорсить его оффлайн (AS-REP Roasting через Rubeus / impacket-GetNPUsers).'
+  triggers_on: plumhound:Users_NoKerbReq
+  plumhound:
+  - file: Users_NoKerbReq
+    cols:
+    - Username
+    - DisplayName
+    - Enabled
+    - AdminCount
+    - SPNs
+- id: PH-Users-OldPwd-3mo
+  title: Учётные записи с паролем, не менявшимся более 3 месяцев
+  type: Недостаток
+  segment: Серверный
+  recommendation: Принудительно сменить пароли. Установить политику ротации не реже одного раза в 90 дней (Default Domain Password Policy MaxPasswordAge ≤ 90). Для сервисных УЗ — перевести на gMSA.
+  triggers_on: plumhound:Users_gt003MoOldPasswords
+  plumhound:
+  - file: Users_gt003MoOldPasswords
+    cols:
+    - Username
+    - DisplayName
+    - Enabled
+    - AdminCount
+    - PWDLastSet
+- id: PH-Users-NotActive-3mo
+  title: Учётные записи неактивны более 3 месяцев
+  type: Недостаток
+  segment: Серверный
+  recommendation: 'Расследовать неактивные УЗ: отключить тех, кто более не работает; для временно неактивных установить login-restrictions. Активные неиспользуемые УЗ — мишень для credential stuffing.'
+  triggers_on: plumhound:UsersNotActive3mo
+  plumhound:
+  - file: UsersNotActive3mo
+    cols:
+    - Username
+    - DisplayName
+    - Enabled
+    - PWDLastSet
+    - LastLogonTimeStamp
+- id: PH-Users-NeverActive
+  title: Учётные записи никогда не входили в систему
+  type: Недостаток
+  segment: Серверный
+  recommendation: Отключить или удалить УЗ, которые никогда не использовались для входа. Длительно неиспользуемые активные УЗ — типичная мишень брутфорса и path для persistence атакующего (создал УЗ → не использует → ждёт).
+  triggers_on: plumhound:Users_NeverActive_Enabled
+  plumhound:
+  - file: Users_NeverActive_Enabled
+    cols:
+    - Username
+    - DisplayName
+    - Enabled
+    - Title
+    - AdminCount
+    - PWDLastSet
+- id: PH-Computers-NotActive-6mo
+  title: Компьютеры неактивны более 6 месяцев
+  type: Недостаток
+  segment: Серверный
+  recommendation: Удалить из AD computer-объекты, не подключавшиеся к домену более 180 дней (Search-ADAccount -AccountInactive -TimeSpan 180.00:00:00 -ComputersOnly). Stale computer-объекты могут быть восстановлены атакующим для shadow credentials атак.
+  triggers_on: plumhound:ComputersNotActive6mo
+  plumhound:
+  - file: ComputersNotActive6mo
+    cols:
+    - ComputerName
+    - OS
+    - LastLogonTimeStamp
+- id: PH-LocalAdmin-Computers
+  title: Компьютеры с расширенным составом локальных администраторов
+  type: Возможно недостаток
+  segment: Пользовательский
+  recommendation: Свести состав локальных Administrators к минимально необходимому (домен-уровневая группа Tier-1 admins + LAPS-аккаунт). Использовать Restricted Groups GPO для контроля состава. Чем больше локальных админов — тем шире lateral movement surface.
+  triggers_on: plumhound:LocalAdmin_Computers
+  plumhound:
+  - file: LocalAdmin_Computers
+    cols:
+    - Computer
+    - TargetComputer
+- id: PH-DCOwners
+  title: Нестандартный владелец (Owner) computer-объектов контроллеров домена
+  type: Уязвимость
+  segment: Серверный
+  recommendation: Восстановить владельца computer-объектов DC в Domain Admins / Enterprise Admins. Владелец имеет неявное право WriteDACL — может выдать любые права на DC и скомпрометировать домен (PKINIT / RBCD / DCShadow).
+  triggers_on: plumhound:DCOwners
+  plumhound:
+  - file: DCOwners
+    cols:
+    - DC
+    - Owner
+    - Type
+    - Enabled
+- id: PH-ExchangeGroups-Tier0
+  title: Exchange-группы имеют права на изменение Tier-0 объектов
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Применить Microsoft AD Split Permissions Model или Exchange Permissions Model обновления (November 2019 SU). Удалить Exchange Trusted Subsystem / Exchange Windows Permissions из ACL домена и tier-0 объектов.
+
+    Уязвимости PrivExchange / Exchange-PrivEsc позволяли с правами mailbox-пользователя получить domain-admin через WriteDACL на корень домена.
+  triggers_on: plumhound:ExchangeGroups_Tier0Access
+  plumhound:
+  - file: ExchangeGroups_Tier0Access
+    cols:
+    - GroupName
+    - Rights
+    - Target
+    - TargetType
+- id: PH-Computers-WithDescriptions
+  title: Computer-объекты с заполненным атрибутом Description
+  type: Возможно недостаток
+  segment: Серверный
+  recommendation: Проверить description-поля computer-объектов на наличие чувствительных данных (паролей, секретов, контактов админов). Атрибут description читается анонимно/любым пользователем домена. Очистить либо использовать managedBy с tier-0 контактом.
+  triggers_on: plumhound:Computers_WithDescriptions
+  plumhound:
+  - file: Computers_WithDescriptions
+    cols:
+    - Computer
+    - Description
+- id: PH-Users-AdminCount-NoTier0
+  title: УЗ с adminCount=1, но не входящие в tier-0 группы
+  type: Возможно недостаток
+  segment: Серверный
+  recommendation: |-
+    Очистить adminCount=1 у УЗ, удалённых из привилегированных групп. После удаления из группы Windows не сбрасывает adminCount автоматически — УЗ продолжает наследовать AdminSDHolder ACL (Deny Inherit), что мешает legitimate-делегированию.
+
+    Это также может быть индикатором попытки скрыть привилегированную УЗ.
+  triggers_on: plumhound:Users_AdminCount1_NoTier0
+  plumhound:
+  - file: Users_AdminCount1_NoTier0
+    cols:
+    - Username
+    - DisplayName
+    - Description
+    - Enabled
+    - AdminCount
+    - AllGroups
+- id: PH-Crypto-WeakEncryption
+  title: Объекты AD поддерживают слабые алгоритмы шифрования Kerberos (DES / RC4)
+  type: Уязвимость
+  segment: Серверный
+  recommendation: Установить msDS-SupportedEncryptionTypes ≥ 0x18 (AES128 + AES256) у всех УЗ. Удалить поддержку DES (0x1, 0x2) и RC4-HMAC (0x4). RC4 уязвим к Kerberoasting offline брутфорсу (быстрее AES в 100+ раз).
+  triggers_on: plumhound:Crypto-WeakEncryption
+  plumhound:
+  - file: Crypto-WeakEncryption
+    cols:
+    - ObjectName
+    - ObjectType
+    - Encryption
+- id: PH-UsersWithPassInDescription
+  title: Пользователи с упоминанием «pass» / «pw» в Description
+  type: Уязвимость
+  segment: Серверный
+  recommendation: |-
+    Очистить description-атрибут у затронутых УЗ. Description часто содержит реальный пароль или подсказку — атрибут читается любым пользователем домена.
+
+    Команда: Set-ADUser <user> -Description $null
+  triggers_on: plumhound:UsersWithPassInDescription
+  plumhound:
+  - file: UsersWithPassInDescription
+    cols:
+    - Name
+    - DisplayName
+    - Enabled
+    - Description
+    - SPN
+- id: PH-OS-Unsupported
+  title: Компьютеры с устаревшими версиями ОС (BloodHound-сводка)
+  type: Уязвимость
+  segment: Серверный
+  recommendation: Мигрировать или вывести из эксплуатации все хосты с unsupported OS (Windows 2000/2003/2008/2012, XP, Vista, Windows 7, Windows ME). См. PingCastle правила S-OS-* для деталей по конкретным версиям.
+  triggers_on: plumhound:OS_Unsupported
+  plumhound:
+  - file: OS_Unsupported
+    cols:
+    - Computer
+    - UnsupportedOS
+    - Enabled
+- id: PH-GPOs-NonDA-InterestingPerms
+  title: GPO с правами модификации у не-Domain-Admin пользователей
+  type: Уязвимость
+  segment: Серверный
+  recommendation: Удалить ACE GenericAll / GenericWrite / WriteDacl / WriteOwner / AllExtendedRights / Owns на GPO-объектах у не-DA пользователей. GPO применяются с правами SYSTEM на member-серверах и DC — модификация GPO непривилегированной УЗ ведёт к RCE на всех хостах в области действия (атака SharpGPOAbuse / PowerView).
+  triggers_on: plumhound:GPOs-NonDA-InterestingPerms
+  plumhound:
+  - file: GPOs-NonDA-InterestingPerms
+    cols:
+    - Principal
+    - Object_Type
+    - Enabled
+    - Rights
+    - Targets

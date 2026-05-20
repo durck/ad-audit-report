@@ -1,0 +1,238 @@
+"""Typer CLI: adreport build|init-config|validate|list-rules."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import typer
+
+from .catalog import Catalog
+from .config import DEFAULT_PROJECT_YAML, ProjectConfig
+from .parsers import PlumHoundLoader, load_pingcastle_details, parse_pingcastle
+from .pipeline import build_findings
+from .renderer import render_report
+from .sanitize import sanitize_template
+
+app = typer.Typer(add_completion=False, help="Generate Excel pentest reports from PingCastle + PlumHound.")
+
+
+def _resolve_relative(base: Path, p: Path) -> Path:
+    """Resolve paths in project.yaml relative to the config file's directory."""
+    return p if p.is_absolute() else (base.parent / p).resolve()
+
+
+def _resolve_domain_input(base: Path, d):
+    """Resolve relative paths inside a DomainInput against the config dir."""
+    pc = _resolve_relative(base, d.pingcastle)
+    html = _resolve_relative(base, d.pingcastle_html) if d.pingcastle_html else None
+    if html is None:
+        cand = pc.with_suffix(".html")
+        if cand.exists():
+            html = cand
+    plum = _resolve_relative(base, d.plumhound) if d.plumhound else None
+    return d.model_copy(update={"pingcastle": pc, "pingcastle_html": html, "plumhound": plum})
+
+
+def _load_project(path: Path) -> tuple[ProjectConfig, Path]:
+    """Load ProjectConfig and return alongside the config's parent directory for relative-path resolution."""
+    cfg = ProjectConfig.load(path)
+    base = path.resolve()
+
+    update: dict = {
+        "template": _resolve_relative(base, cfg.template) if cfg.template is not None else None,
+        "output": _resolve_relative(base, cfg.output),
+    }
+
+    if cfg.inputs is not None:
+        pingcastle_path = _resolve_relative(base, cfg.inputs.pingcastle)
+        html_path = (
+            _resolve_relative(base, cfg.inputs.pingcastle_html) if cfg.inputs.pingcastle_html else None
+        )
+        if html_path is None:
+            candidate = pingcastle_path.with_suffix(".html")
+            if candidate.exists():
+                html_path = candidate
+        update["inputs"] = cfg.inputs.model_copy(
+            update={
+                "pingcastle": pingcastle_path,
+                "pingcastle_html": html_path,
+                "plumhound": _resolve_relative(base, cfg.inputs.plumhound) if cfg.inputs.plumhound else None,
+            }
+        )
+    if cfg.domains:
+        update["domains"] = [_resolve_domain_input(base, d) for d in cfg.domains]
+
+    cfg = cfg.model_copy(update=update)
+    return cfg, base.parent
+
+
+@app.command()
+def init_config(path: Path = typer.Argument(Path("project.yaml"), help="Where to write the config file.")):
+    """Write a starter project.yaml to PATH."""
+    if path.exists():
+        typer.secho(f"{path} already exists — refusing to overwrite.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    path.write_text(DEFAULT_PROJECT_YAML, encoding="utf-8")
+    typer.secho(f"Wrote {path}", fg=typer.colors.GREEN)
+
+
+def _run_pipeline_for_domains(cfg, catalog) -> tuple[list, list[str]]:
+    """Run pipeline across every domain in cfg; return (findings, unknown_risk_ids).
+
+    Handles both `inputs:` (single domain) and `domains:` (multi). Findings are
+    flat-merged; each carries its `.domain` tag.
+    """
+    all_findings: list = []
+    all_unknown: list[str] = []
+    for d in cfg.iter_domain_inputs():
+        if not d.pingcastle.exists():
+            typer.secho(
+                f"⚠ Skipping domain {d.name or '<single>'}: PingCastle XML not found at {d.pingcastle}",
+                fg=typer.colors.YELLOW,
+            )
+            continue
+        pc = parse_pingcastle(d.pingcastle)
+        pc_details = load_pingcastle_details(d.pingcastle_html) if d.pingcastle_html else {}
+        plum = PlumHoundLoader(d.plumhound) if d.plumhound else None
+        try:
+            result = build_findings(
+                pc, plum, catalog, cfg, pingcastle_details=pc_details, domain=d.name
+            )
+        finally:
+            if plum is not None:
+                plum.cleanup()
+        all_findings.extend(result.findings)
+        all_unknown.extend(result.unknown_risk_ids)
+        label = d.name or pc.domain or "<single>"
+        html_info = f", html_details={len(pc_details)}" if pc_details else ""
+        typer.secho(
+            f"  [{label}] rules={len(pc.rules)} score={pc.global_score} "
+            f"findings={len(result.findings)}{html_info}",
+            fg=typer.colors.CYAN,
+        )
+    return all_findings, sorted(set(all_unknown))
+
+
+@app.command()
+def validate(
+    project: Path = typer.Argument(..., help="Path to project.yaml."),
+):
+    """Parse the inputs, show coverage stats — but do not render the xlsx."""
+    cfg, _ = _load_project(project)
+    catalog = Catalog.load_default()
+    findings, unknown = _run_pipeline_for_domains(cfg, catalog)
+    typer.secho(f"Total findings prepared: {len(findings)}", fg=typer.colors.GREEN)
+    if unknown:
+        typer.secho(
+            f"⚠ Unknown RiskIds: {', '.join(unknown)}",
+            fg=typer.colors.YELLOW,
+        )
+        typer.echo("  → add entries for them to recommendations.yaml.")
+
+
+@app.command()
+def list_rules(
+    project: Path | None = typer.Argument(None, help="Optional project.yaml — if given, marks rules present in this scan."),
+):
+    """List all RiskIds known to the catalog, optionally marking those in a specific scan."""
+    catalog = Catalog.load_default()
+    present: set[str] = set()
+    extra: list[str] = []
+    if project is not None:
+        cfg, _ = _load_project(project)
+        for d in cfg.iter_domain_inputs():
+            if d.pingcastle.exists():
+                pc = parse_pingcastle(d.pingcastle)
+                present.update(r.risk_id for r in pc.rules)
+        extra = sorted(present - set(catalog.recommendations))
+
+    typer.secho(
+        f"Catalog: {len(catalog.recommendations)} PingCastle rule(s), "
+        f"{len(catalog.synthetic_findings)} synthetic finding(s)",
+        fg=typer.colors.CYAN,
+    )
+    for risk_id in sorted(catalog.recommendations):
+        marker = " [match]" if risk_id in present else ""
+        typer.echo(f"  {risk_id}{marker}")
+    if extra:
+        typer.secho(f"\nIn this scan but missing from catalog:", fg=typer.colors.YELLOW)
+        for risk_id in extra:
+            typer.echo(f"  {risk_id}")
+
+
+@app.command("sanitize-template")
+def sanitize_template_cmd(
+    template: Path = typer.Argument(..., help="Path to the corporate template xlsx (input)."),
+    output: Path = typer.Argument(..., help="Where to write the sanitised template."),
+    title: str = typer.Option(
+        "Список недостатков конфигурации",
+        "--title",
+        help="Replacement for cell A3 (the report title that often contains the auditor's name).",
+    ),
+):
+    """Strip confidential metadata from an xlsx template.
+
+    Removes: creator / lastModifiedBy from docProps, absPath of the original
+    author's filesystem from workbook.xml, Company / Manager from app.xml, and
+    replaces the cell A3 report title with a neutral string.
+
+    Preserves: all sheet structure, styles, data validations, named ranges,
+    tables, drawings, printerSettings — i.e. the xlsx remains a usable template.
+    """
+    changes = sanitize_template(template, output, new_title=title)
+    typer.secho(f"✓ Wrote {output}", fg=typer.colors.GREEN)
+    if changes:
+        typer.echo("Sanitised fields:")
+        for k, v in changes.items():
+            typer.echo(f"  {k}:  {v}")
+    else:
+        typer.secho("No confidential metadata found — template was already clean.", fg=typer.colors.YELLOW)
+
+
+@app.command()
+def build(
+    project: Path = typer.Argument(..., help="Path to project.yaml."),
+):
+    """Build the Excel report according to project.yaml."""
+    cfg, _ = _load_project(project)
+
+    template_path = cfg.resolved_template()
+    if not template_path.exists():
+        typer.secho(f"Template not found: {template_path}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    if cfg.template is None:
+        typer.secho(f"Using bundled clean template: {template_path}", fg=typer.colors.CYAN)
+
+    catalog = Catalog.load_default()
+    findings, unknown = _run_pipeline_for_domains(cfg, catalog)
+
+    if not findings:
+        typer.secho("No findings produced. Nothing to write.", fg=typer.colors.YELLOW)
+        return
+
+    cfg.output.parent.mkdir(parents=True, exist_ok=True)
+    render_report(
+        template_path,
+        cfg.output,
+        findings,
+        clear_example_rows=cfg.defaults.clear_example_rows,
+    )
+
+    typer.secho(f"✓ Wrote {cfg.output}", fg=typer.colors.GREEN)
+    typer.echo(f"  Findings: {len(findings)}")
+    appendix_count = sum(1 for f in findings if f.appendix is not None)
+    typer.echo(f"  Appendices: {appendix_count}")
+    # Show per-domain breakdown if multi-domain
+    domains_seen = {f.domain for f in findings if f.domain}
+    if domains_seen:
+        typer.echo(f"  Domains: {len(domains_seen)} — {', '.join(sorted(domains_seen))}")
+    if unknown:
+        typer.secho(
+            f"⚠ {len(unknown)} unknown RiskId(s): {', '.join(unknown)} (written with placeholder)",
+            fg=typer.colors.YELLOW,
+        )
+
+
+if __name__ == "__main__":
+    app()

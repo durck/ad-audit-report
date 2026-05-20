@@ -1,0 +1,41 @@
+# Example project config — copy to a per-engagement directory and edit.
+#
+# Run:
+#   adreport init-config ./project.yaml   # generates this file
+#   adreport validate ./project.yaml      # parses inputs, reports catalog coverage
+#   adreport build ./project.yaml         # writes the Excel report
+
+client:
+  name: 'ПАО "Заказчик"'
+  audit_date: 2026-05-15
+
+inputs:
+  # PingCastle XML (the .xml output of `pingcastle.exe --healthcheck`).
+  pingcastle: ./pingcastle/healthcheck.xml
+  # PlumHound output — directory OR .zip. Optional; without it, findings have
+  # no appendix details (ldap_hint snippets are used when available).
+  plumhound: ./plumhound/Reports.zip
+
+# (Optional) Custom xlsx template. If omitted, the package ships with a
+# pre-sanitised default template (no auditor metadata, neutral A3 title).
+# Provide your own path only if your engagement requires a different format.
+# template: ./template.xlsx
+
+# Where to write the populated report.
+output: ./report.xlsx
+
+defaults:
+  segment: Серверный         # default value for column D ("Сегмент сети")
+  type: Недостаток           # default value for column E ("Тип")
+  appendix_threshold: 5      # ≥N affected objects → spill into separate Прил.N sheet
+
+# Override individual rules / synthetic findings. 'skip: true' excludes a rule.
+# Use this for project-specific re-classifications without touching the catalog.
+overrides:
+  # S-OS-2012:
+  #   type: Уязвимость
+  #   segment: Серверный
+  # PH-KRBTGT-Stale:
+  #   appendix_threshold: 1
+  # A-MachineAccountQuota:
+  #   skip: true

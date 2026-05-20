@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.xlsx.bak
+.tox/
+.mypy_cache/
+
+# Output artefacts from sample runs (do not commit client data)
+/output/
+/_demo_output/

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ad-audit-report"
+version = "0.1.0"
+description = "Generate Excel pentest reports from PingCastle and PlumHound output using a corporate template"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "durck", email = "poiulkjhmnv50@gmail.com" }]
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+    "lxml>=5.0",
+    "beautifulsoup4>=4.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.5",
+    "openpyxl>=3.1",  # used in tests only to verify xlsx validity
+]
+
+[project.scripts]
+adreport = "adreport.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+adreport = ["catalog/*.yaml", "templates/*.xlsx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]

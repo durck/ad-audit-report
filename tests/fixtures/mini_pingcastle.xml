@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<HealthcheckData>
+  <EngineVersion>3.1.0.1</EngineVersion>
+  <GenerationDate>2026-05-15T12:00:00</GenerationDate>
+  <DomainFQDN>test.local</DomainFQDN>
+  <NetBIOSName>TEST</NetBIOSName>
+  <NumberOfDC>2</NumberOfDC>
+  <GlobalScore>45</GlobalScore>
+  <StaleObjectsScore>30</StaleObjectsScore>
+  <PrivilegiedGroupScore>20</PrivilegiedGroupScore>
+  <TrustScore>0</TrustScore>
+  <AnomalyScore>10</AnomalyScore>
+  <KrbtgtLastChangeDate>2024-01-01T00:00:00</KrbtgtLastChangeDate>
+  <GuestEnabled>true</GuestEnabled>
+  <RiskRules>
+    <HealthcheckRiskRule>
+      <RiskId>P-ProtectedUsers</RiskId>
+      <Category>PrivilegedAccounts</Category>
+      <Model>AccountTakeOver</Model>
+      <Points>10</Points>
+      <Rationale>Number of admins not in Protected Users: 3</Rationale>
+    </HealthcheckRiskRule>
+    <HealthcheckRiskRule>
+      <RiskId>S-OS-2012</RiskId>
+      <Category>StaleObjects</Category>
+      <Model>ObsoleteOS</Model>
+      <Points>10</Points>
+      <Rationale>Presence of Windows Server 2012 = 5</Rationale>
+    </HealthcheckRiskRule>
+  </RiskRules>
+</HealthcheckData>
