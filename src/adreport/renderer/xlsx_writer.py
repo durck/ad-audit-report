@@ -547,13 +547,23 @@ _CELL_MAX_CHARS = 32700
 # XML 1.0 disallows control characters (except \t \n \r) in element text;
 # PlumHound HTML occasionally contains them and they corrupt the workbook.
 _XML10_INVALID_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# U+FFFD REPLACEMENT CHARACTER — what BeautifulSoup / lxml emit when input
+# bytes can't be decoded as UTF-8. Valid Unicode and valid XML, but Excel's
+# stricter validators have been observed to reject content with these. Also
+# looks ugly in a security report ("��� ��� ��� @CORP.LOCAL"). Collapse runs
+# of U+FFFD to a single "?" so cells stay readable.
+_REPLACEMENT_RUN_RE = re.compile(r"�+")
 
 
 def _sanitize_cell_text(text: str) -> str:
-    """Strip XML-illegal control characters and truncate to Excel's cell limit."""
+    """Strip XML-illegal control characters and truncate to Excel's cell limit.
+
+    Also collapses runs of U+FFFD REPLACEMENT CHARACTER to a single "?".
+    """
     if not text:
         return ""
     cleaned = _XML10_INVALID_RE.sub("", text)
+    cleaned = _REPLACEMENT_RUN_RE.sub("?", cleaned)
     if len(cleaned) > _CELL_MAX_CHARS:
         marker = f"\n…[обрезано {len(cleaned) - _CELL_MAX_CHARS} символов]"
         cleaned = cleaned[: _CELL_MAX_CHARS - len(marker)] + marker

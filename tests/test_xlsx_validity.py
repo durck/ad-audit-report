@@ -30,6 +30,21 @@ def test_sanitize_strips_xml_invalid_controls():
     assert _sanitize_cell_text(raw) == "abcdefghi"
 
 
+def test_sanitize_collapses_replacement_chars():
+    """U+FFFD runs from BeautifulSoup's bad-UTF-8 fallback collapse to '?'.
+
+    Source: PlumHound HTML for some domains arrives with cp1251 / cp866 bytes
+    incorrectly labelled UTF-8 — every bad byte becomes U+FFFD. Long runs
+    look like cell garbage and have been observed to trigger Excel's strict
+    validators.
+    """
+    raw = "user@CORP.LOCAL — ��� ��� ��� test"
+    out = _sanitize_cell_text(raw)
+    assert "�" not in out
+    # Each run replaced by single '?'
+    assert out == "user@CORP.LOCAL — ? ? ? test"
+
+
 def test_sanitize_keeps_tab_lf_cr():
     """\\t, \\n, \\r are XML 1.0 legal and must survive."""
     raw = "line1\nline2\tindented\rdone"
