@@ -89,13 +89,13 @@ def _build_main_sheet(ws) -> None:
         c.alignment = header_align
         c.border = border
 
-    # Data style — empty cells styled so appended findings inherit consistent look.
-    data_align = Alignment(wrap_text=True, vertical="top")
-    for row in range(6, LAST_DATA_ROW + 1):
-        for col in range(1, len(HEADERS) + 1):
-            c = ws.cell(row=row, column=col, value=None)
-            c.alignment = data_align
-            c.border = border
+    # Note: do NOT pre-populate rows 6..LAST_DATA_ROW with empty cells.
+    # openpyxl writes empty cells as `<c r="X6" t="n"/>` (number type, no <v>)
+    # which is malformed per OOXML spec — Excel rejects such files with
+    # «Ошибка в части содержимого». Per-cell styling is inherited by appended
+    # rows via the Excel Table's dataDxfId, which colours / borders every row
+    # within the table's ref range automatically. The renderer adds new rows
+    # with explicit cell content, so they pick up the table's data style.
 
     # Excel Table on the data range
     ref = f"A5:{get_column_letter(len(HEADERS))}{LAST_DATA_ROW}"

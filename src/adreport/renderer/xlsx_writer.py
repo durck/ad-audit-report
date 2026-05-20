@@ -159,6 +159,7 @@ def render_report(
         )
 
     _add_hyperlinks(main_sheet_xml, appendix_links)
+    _refresh_dimension(main_sheet_xml)
 
     parts[main_sheet_path] = _serialize(main_sheet_xml)
 
@@ -372,6 +373,53 @@ def _next_finding_number(sheet_xml: etree._Element, start_row: int) -> int:
                 max_num = max(max_num, int(v.text))
             break
     return max_num + 1
+
+
+def _refresh_dimension(sheet_xml: etree._Element) -> None:
+    """Update ``<dimension ref="...">`` to span the actual populated data range.
+
+    OOXML allows readers to use <dimension> as a hint for the used range. Stale
+    dimensions (e.g. template's "A3:I5" still in place after adding 144 rows)
+    don't always break Excel but raise warnings in stricter validators. Keep it
+    consistent with reality.
+    """
+    sheet_data = sheet_xml.find(_q("sheetData"))
+    if sheet_data is None:
+        return
+    max_row = 0
+    max_col_letters = "A"
+    import re as _re
+    col_re = _re.compile(r"^([A-Z]+)\d+$")
+
+    def _col_idx(letters: str) -> int:
+        n = 0
+        for ch in letters:
+            n = n * 26 + (ord(ch) - ord("A") + 1)
+        return n
+
+    for row in sheet_data.findall(_q("row")):
+        r_attr = row.get("r")
+        if r_attr is None:
+            continue
+        rn = int(r_attr)
+        if rn > max_row:
+            max_row = rn
+        for c in row.findall(_q("c")):
+            m = col_re.match(c.get("r", ""))
+            if m and _col_idx(m.group(1)) > _col_idx(max_col_letters):
+                max_col_letters = m.group(1)
+
+    if max_row == 0:
+        return
+    new_ref = f"A1:{max_col_letters}{max_row}"
+    dim = sheet_xml.find(_q("dimension"))
+    if dim is None:
+        # Insert <dimension> right after <worksheet> opening (before sheetViews)
+        dim = etree.Element(_q("dimension"))
+        dim.set("ref", new_ref)
+        sheet_xml.insert(0, dim)
+    else:
+        dim.set("ref", new_ref)
 
 
 def _template_style_for_column(
