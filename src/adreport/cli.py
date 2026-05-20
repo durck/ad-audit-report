@@ -24,9 +24,9 @@ def _resolve_relative(base: Path, p: Path) -> Path:
 
 def _resolve_domain_input(base: Path, d):
     """Resolve relative paths inside a DomainInput against the config dir."""
-    pc = _resolve_relative(base, d.pingcastle)
+    pc = _resolve_relative(base, d.pingcastle) if d.pingcastle else None
     html = _resolve_relative(base, d.pingcastle_html) if d.pingcastle_html else None
-    if html is None:
+    if html is None and pc is not None:
         cand = pc.with_suffix(".html")
         if cand.exists():
             html = cand
@@ -82,19 +82,43 @@ def _run_pipeline_for_domains(cfg, catalog) -> tuple[list, list[str]]:
 
     Handles both `inputs:` (single domain) and `domains:` (multi). Findings are
     flat-merged; each carries its `.domain` tag.
+
+    Sources are independent: a domain may have only PingCastle, only PlumHound,
+    or both. Missing PingCastle → PlumHound-only synthetic findings still fire.
+    Missing both → domain is skipped with a warning.
     """
+    from .model import PingCastleReport
+
     all_findings: list = []
     all_unknown: list[str] = []
     for d in cfg.iter_domain_inputs():
-        if not d.pingcastle.exists():
+        pc_path = d.pingcastle if d.pingcastle and d.pingcastle.exists() else None
+        plum_path = d.plumhound if d.plumhound and d.plumhound.exists() else None
+        if pc_path is None and plum_path is None:
             typer.secho(
-                f"⚠ Skipping domain {d.name or '<single>'}: PingCastle XML not found at {d.pingcastle}",
+                f"⚠ Skipping domain {d.name or '<single>'}: neither PingCastle XML nor PlumHound output found",
                 fg=typer.colors.YELLOW,
             )
             continue
-        pc = parse_pingcastle(d.pingcastle)
-        pc_details = load_pingcastle_details(d.pingcastle_html) if d.pingcastle_html else {}
-        plum = PlumHoundLoader(d.plumhound) if d.plumhound else None
+
+        if pc_path is not None:
+            pc = parse_pingcastle(pc_path)
+        else:
+            # Synthesise an empty report so PlumHound-only synthetic findings
+            # can still trigger. No PingCastle rules will be iterated.
+            pc = PingCastleReport(
+                domain=d.name, generation_date="", global_score=0,
+                stale_objects_score=0, privileged_group_score=0,
+                trust_score=0, anomaly_score=0, rules=(),
+            )
+            typer.secho(
+                f"  ℹ [{d.name}] PingCastle XML missing → PingCastle rules skipped, "
+                f"PlumHound-only synthetics will still run",
+                fg=typer.colors.YELLOW,
+            )
+
+        pc_details = load_pingcastle_details(d.pingcastle_html) if d.pingcastle_html and d.pingcastle_html.exists() else {}
+        plum = PlumHoundLoader(plum_path) if plum_path else None
         try:
             result = build_findings(
                 pc, plum, catalog, cfg, pingcastle_details=pc_details, domain=d.name
@@ -106,9 +130,9 @@ def _run_pipeline_for_domains(cfg, catalog) -> tuple[list, list[str]]:
         all_unknown.extend(result.unknown_risk_ids)
         label = d.name or pc.domain or "<single>"
         html_info = f", html_details={len(pc_details)}" if pc_details else ""
+        pc_info = f"rules={len(pc.rules)} score={pc.global_score} " if pc_path else "rules=0 (no XML) "
         typer.secho(
-            f"  [{label}] rules={len(pc.rules)} score={pc.global_score} "
-            f"findings={len(result.findings)}{html_info}",
+            f"  [{label}] {pc_info}findings={len(result.findings)}{html_info}",
             fg=typer.colors.CYAN,
         )
     return all_findings, sorted(set(all_unknown))

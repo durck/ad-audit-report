@@ -44,10 +44,16 @@ class InputsConfig(BaseModel):
 
 
 class DomainInput(BaseModel):
-    """One AD domain's set of input files when scanning multiple domains."""
+    """One AD domain's set of input files when scanning multiple domains.
+
+    Either ``pingcastle`` or ``plumhound`` (or both) must be provided. A domain
+    with only PlumHound output still produces useful findings via PlumHound-only
+    synthetic rules (ADCS, DCSync, Kerberoasting, etc.); a domain with only
+    PingCastle XML produces all PingCastle rule rows (sans appendix details).
+    """
 
     name: str  # FQDN, e.g. "corp.example.com"
-    pingcastle: Path
+    pingcastle: Path | None = None
     pingcastle_html: Path | None = None
     plumhound: Path | None = None
 
