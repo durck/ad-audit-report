@@ -558,12 +558,23 @@ _REPLACEMENT_RUN_RE = re.compile(r"�+")
 def _sanitize_cell_text(text: str) -> str:
     """Strip XML-illegal control characters and truncate to Excel's cell limit.
 
-    Also collapses runs of U+FFFD REPLACEMENT CHARACTER to a single "?".
+    Normalisations applied:
+      - control chars (XML 1.0 illegal) → stripped
+      - U+FFFD runs (BeautifulSoup bad-UTF-8 fallback) → single "?"
+      - CRLF / CR → LF (no mixed line endings)
+      - any run of 2+ LFs → single LF (Excel's strict validator has been
+        observed to reject consecutive newlines inside xml:space="preserve"
+        cells; the recommendation text often used `\n\n` as paragraph
+        separators which is harmless to humans but breaks Excel on open)
+      - length capped to 32700 chars (Excel limit + truncation marker)
     """
     if not text:
         return ""
     cleaned = _XML10_INVALID_RE.sub("", text)
     cleaned = _REPLACEMENT_RUN_RE.sub("?", cleaned)
+    # Normalise line endings, then collapse paragraph breaks to single newlines.
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"\n{2,}", "\n", cleaned)
     if len(cleaned) > _CELL_MAX_CHARS:
         marker = f"\n…[обрезано {len(cleaned) - _CELL_MAX_CHARS} символов]"
         cleaned = cleaned[: _CELL_MAX_CHARS - len(marker)] + marker

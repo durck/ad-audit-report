@@ -30,6 +30,24 @@ def test_sanitize_strips_xml_invalid_controls():
     assert _sanitize_cell_text(raw) == "abcdefghi"
 
 
+def test_sanitize_collapses_consecutive_newlines():
+    """Catalog entries used `\\n\\n` between paragraphs for readability.
+    In a `<t xml:space="preserve">` cell this serialises to a literal blank
+    line between paragraphs, which Excel's strict validator has been
+    observed to reject. Collapse 2+ LFs to a single LF.
+    """
+    raw = "first paragraph\n\nsecond paragraph\n\n\nthird paragraph"
+    out = _sanitize_cell_text(raw)
+    assert out == "first paragraph\nsecond paragraph\nthird paragraph"
+
+
+def test_sanitize_normalises_line_endings():
+    raw = "windows\r\nmac\rmixed\nend"
+    out = _sanitize_cell_text(raw)
+    assert "\r" not in out
+    assert out == "windows\nmac\nmixed\nend"
+
+
 def test_sanitize_collapses_replacement_chars():
     """U+FFFD runs from BeautifulSoup's bad-UTF-8 fallback collapse to '?'.
 
@@ -45,9 +63,13 @@ def test_sanitize_collapses_replacement_chars():
     assert out == "user@CORP.LOCAL — ? ? ? test"
 
 
-def test_sanitize_keeps_tab_lf_cr():
-    """\\t, \\n, \\r are XML 1.0 legal and must survive."""
-    raw = "line1\nline2\tindented\rdone"
+def test_sanitize_keeps_tab_and_lf():
+    """\\t and \\n are XML 1.0 legal and preserved as-is.
+
+    Note: \\r is normalised to \\n by the sanitiser to avoid mixed line
+    endings — see test_sanitize_normalises_line_endings.
+    """
+    raw = "line1\nline2\tindented\nend"
     assert _sanitize_cell_text(raw) == raw
 
 
