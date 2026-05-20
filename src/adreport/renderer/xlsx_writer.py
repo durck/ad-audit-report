@@ -176,6 +176,12 @@ def render_report(
         parts["[Content_Types].xml"] = _serialize(ct_xml)
 
     # Rewrite zip.
+    # Pre-flight: every XML part must be well-formed before we write the zip.
+    # Catches structural defects (malformed inline text, mismatched namespaces)
+    # at build time instead of letting Excel report "Ошибка в части содержимого"
+    # on the user's machine.
+    _verify_parts_well_formed(parts)
+
     _write_zip(output_path, parts)
 
 
@@ -742,6 +748,36 @@ def _register_new_sheets(
 
 def _serialize(el: etree._Element) -> bytes:
     return etree.tostring(el, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
+def _verify_parts_well_formed(parts: dict[str, bytes]) -> None:
+    """Parse every .xml / .rels part with lxml; raise on syntax errors.
+
+    The error message includes the part name + line/column from the parser so
+    that any introduced regression surfaces immediately at build time instead
+    of as a vague Excel recovery-log entry.
+    """
+    for name, data in parts.items():
+        if not (name.endswith(".xml") or name.endswith(".rels")):
+            continue
+        try:
+            etree.fromstring(data)
+        except etree.XMLSyntaxError as e:
+            # Surface the part + offending line for debugging
+            line_no = getattr(e, "lineno", None) or 1
+            text_lines = data.decode("utf-8", errors="replace").splitlines()
+            context_lo = max(0, line_no - 3)
+            context_hi = min(len(text_lines), line_no + 2)
+            context = "\n".join(
+                f"  {i+1:>5}: {text_lines[i]}"
+                for i in range(context_lo, context_hi)
+            )
+            raise RuntimeError(
+                f"Generated XML is malformed in {name}:\n"
+                f"  {e}\n"
+                f"Context (line {line_no}):\n{context}\n\n"
+                f"This is a bug in the renderer — please open an issue with this trace."
+            ) from e
 
 
 def _write_zip(path: Path, parts: dict[str, bytes]) -> None:
