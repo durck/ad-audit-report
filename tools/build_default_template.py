@@ -75,6 +75,12 @@ def _build_main_sheet(ws) -> None:
     ws.row_dimensions[3].height = 22
     ws.row_dimensions[5].height = 45
 
+    # Default per-column data format (applied to any cell in the column that
+    # doesn't override `s`):
+    #   - column B (Дата) → date format DD.MM.YYYY
+    #   - all other columns inherit wrap-text + top-vertical via the table style
+    ws.column_dimensions["B"].number_format = "DD.MM.YYYY"
+
     # Header row at r5
     header_fill = PatternFill(start_color="305496", end_color="305496", fill_type="solid")
     header_font = Font(bold=True, color="FFFFFF", size=11)

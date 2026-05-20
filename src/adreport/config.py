@@ -195,9 +195,9 @@ inputs:
 #   - name: corp.example.com
 #     pingcastle: ./pc/ad_hc_corp.example.com.xml      # .html sibling auto-detected
 #     plumhound: ./plum/corp.example.com/
-#   - name: fleet.ru
-#     pingcastle: ./pc/ad_hc_fleet.ru.xml
-#     plumhound: ./plum/fleet.ru/
+#   - name: subsidiary.example.com
+#     pingcastle: ./pc/ad_hc_subsidiary.example.com.xml
+#     plumhound: ./plum/subsidiary.example.com/
 
 # template: ./custom-template.xlsx   # optional — bundled clean template used by default
 output: ./report.xlsx

@@ -426,43 +426,46 @@ def _template_style_for_column(
     sheet_data: etree._Element,
     column: str,
     fallback: etree._Element | None = None,
+    header_row: int = 5,
 ) -> str | None:
-    """Return the ``s`` attribute of any existing template-pre-populated cell in
-    `column`, used to inherit the template's per-column styling for new rows.
+    """Return the ``s`` attribute of an existing template DATA cell in `column`.
 
     Strategy:
       1. If `fallback` (existing same-row element) has a cell in this column
          with `s`, return it — preserves customisations the user made.
-      2. Otherwise scan sheetData top-down for the first cell in this column
-         that carries `s` — that's the template's default styling.
-      3. Otherwise return None — Excel will use the workbook default style.
+      2. Otherwise scan sheetData for the first cell in this column **below
+         the header row** (default row 5) — that's the template's default
+         data styling.
+      3. Otherwise return None — Excel falls back to the column-level format
+         (defined in <cols><col style="X"/>) or the workbook default.
 
-    Crucially, indices are *not* hardcoded: they're read from styles.xml-indexed
-    cellXfs entries that physically exist in the template's styles.xml. This
-    keeps the renderer compatible with templates of any complexity.
+    Header row 5 must be skipped: it carries bold/fill/centered styling that
+    would make every data row look like a header if inherited.
     """
-    # Helper: column-letter prefix from a cell ref like "A6" → "A"
     import re as _re
-    _col_re = _re.compile(r"^([A-Z]+)\d+$")
+    _col_re = _re.compile(r"^([A-Z]+)(\d+)$")
 
-    def _cell_col(c: etree._Element) -> str | None:
+    def _cell_meta(c: etree._Element):
         m = _col_re.match(c.get("r", ""))
-        return m.group(1) if m else None
+        return (m.group(1), int(m.group(2))) if m else (None, None)
 
     if fallback is not None:
         for c in fallback.findall(_q("c")):
-            if _cell_col(c) == column:
+            col, _ = _cell_meta(c)
+            if col == column:
                 s = c.get("s")
                 if s:
                     return s
                 break
     for row in sheet_data.findall(_q("row")):
         for c in row.findall(_q("c")):
-            if _cell_col(c) == column:
+            col, row_num = _cell_meta(c)
+            if col == column and row_num is not None and row_num > header_row:
                 s = c.get("s")
                 if s:
                     return s
-                break
+                # Cell exists in data area without s → fall through to column-level
+                return None
     return None
 
 
