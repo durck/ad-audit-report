@@ -277,6 +277,121 @@ def sanitize_template_cmd(
 
 
 @app.command()
+def doctor(
+    xlsx: Path = typer.Argument(..., help="Path to a built report xlsx to validate."),
+):
+    """Sanity-check a generated xlsx for problems Excel will reject on open.
+
+    Checks every internal XML part for:
+      - well-formedness (parseable XML)
+      - cell text length ≤ 32767 chars (Excel hard limit)
+      - no XML 1.0 forbidden control characters in cell content
+      - workbook ↔ rels ↔ ContentTypes consistency (sheetId / rId / Override)
+      - no duplicate sheet names / sheetIds / rIds
+
+    Use this when Excel shows «Ошибка в части содержимого» on open and the
+    standard render path produces a file that openpyxl loads but Excel rejects.
+    """
+    import re as _re
+    import zipfile as _zip
+
+    from lxml import etree as _etree
+
+    NS_M = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    NS_PKG = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+    NS_REL_ = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    NS_CT_ = "{http://schemas.openxmlformats.org/package/2006/content-types}"
+    INVALID_RE = _re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+    if not xlsx.exists():
+        typer.secho(f"File not found: {xlsx}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    issues: list[str] = []
+    over_limit: list[tuple[str, int]] = []
+    bad_chars: list[str] = []
+
+    with _zip.ZipFile(xlsx) as z:
+        names = z.namelist()
+
+        for n in names:
+            if not (n.endswith(".xml") or n.endswith(".rels")):
+                continue
+            try:
+                _etree.fromstring(z.read(n))
+            except _etree.XMLSyntaxError as e:
+                issues.append(f"XML parse error in {n}: {e}")
+
+        for n in names:
+            if "worksheets/sheet" not in n or not n.endswith(".xml"):
+                continue
+            root = _etree.fromstring(z.read(n))
+            for t in root.iter(NS_M + "t"):
+                if t.text is None:
+                    continue
+                if len(t.text) > 32767:
+                    over_limit.append((n, len(t.text)))
+                if INVALID_RE.search(t.text):
+                    bad_chars.append(n)
+
+        try:
+            wb = _etree.fromstring(z.read("xl/workbook.xml"))
+            rels = _etree.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+            ct = _etree.fromstring(z.read("[Content_Types].xml"))
+        except KeyError as e:
+            issues.append(f"Missing core part: {e}")
+            wb = rels = ct = None
+
+        if wb is not None:
+            sheets = wb.findall(f".//{NS_M}sheet")
+            from collections import Counter
+
+            for label, items in (
+                ("sheet names", [s.get("name") for s in sheets]),
+                ("sheetIds", [s.get("sheetId") for s in sheets]),
+                ("rIds", [s.get(NS_REL_ + "id") for s in sheets]),
+            ):
+                dup = [x for x, c in Counter(items).items() if c > 1]
+                if dup:
+                    issues.append(f"Duplicate {label}: {dup}")
+
+            rels_ids = {r.get("Id") for r in rels.findall(NS_PKG + "Relationship")}
+            for s in sheets:
+                rid = s.get(NS_REL_ + "id")
+                if rid and rid not in rels_ids:
+                    issues.append(f"sheet '{s.get('name')}' rId={rid} missing in rels")
+
+            ct_parts = {o.get("PartName") for o in ct.findall(NS_CT_ + "Override")}
+            for sheet_part in [n for n in names if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")]:
+                if f"/{sheet_part}" not in ct_parts:
+                    issues.append(f"sheet part /{sheet_part} has no ContentTypes Override")
+
+    typer.secho(f"\n=== Doctor report: {xlsx.name} ===", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  Sheets total      : {len(sheets) if wb is not None else '?'}")
+    typer.echo(f"  XML parse errors  : {sum(1 for i in issues if 'parse error' in i)}")
+    typer.echo(f"  Cells > 32767     : {len(over_limit)}")
+    for n, L in over_limit[:10]:
+        typer.secho(f"      {n}: {L} chars", fg=typer.colors.RED)
+    typer.echo(f"  Bad control chars : {len(bad_chars)}")
+    for n in bad_chars[:10]:
+        typer.secho(f"      {n}", fg=typer.colors.RED)
+    typer.echo(f"  Consistency issues: {len([i for i in issues if 'parse error' not in i])}")
+    for i in issues[:20]:
+        if "parse error" in i:
+            continue
+        typer.secho(f"      • {i[:300]}", fg=typer.colors.YELLOW)
+
+    if not over_limit and not bad_chars and not issues:
+        typer.secho("\n✓ No defects detected.", fg=typer.colors.GREEN, bold=True)
+    else:
+        typer.secho(
+            "\n⚠ Defects above explain Excel's «Ошибка в части содержимого» dialog.",
+            fg=typer.colors.YELLOW, bold=True,
+        )
+        raise typer.Exit(1)
+
+
+@app.command()
 def build(
     project: Path = typer.Argument(..., help="Path to project.yaml."),
 ):
